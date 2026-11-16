@@ -15,18 +15,21 @@ pub enum UpdateStatus {
     Failed(String),
 }
 
-/// Parse "v1.2.3" / "1.2" into numeric components (non-numeric suffixes are ignored).
-fn parse_version(s: &str) -> Vec<u64> {
-    s.trim()
-        .trim_start_matches(['v', 'V'])
-        .split(['.', '-', '+'])
-        .map_while(|p| p.parse::<u64>().ok())
-        .collect()
+/// Split "v1.2.3-beta+meta" into numeric components and an optional pre-release tag.
+fn parse_version(s: &str) -> (Vec<u64>, Option<String>) {
+    let s = s.trim().trim_start_matches(['v', 'V']);
+    let s = s.split('+').next().unwrap_or(s);
+    let (core, pre) = match s.split_once('-') {
+        Some((c, p)) => (c, Some(p.to_string())),
+        None => (s, None),
+    };
+    (core.split('.').map_while(|p| p.parse::<u64>().ok()).collect(), pre)
 }
 
 /// True when `latest` is a strictly newer version than `current`.
+/// A final release is newer than a pre-release of the same number (1.0.0 > 1.0.0-beta).
 pub fn is_newer(latest: &str, current: &str) -> bool {
-    let (a, b) = (parse_version(latest), parse_version(current));
+    let ((a, pa), (b, pb)) = (parse_version(latest), parse_version(current));
     let n = a.len().max(b.len());
     for i in 0..n {
         let (x, y) = (a.get(i).copied().unwrap_or(0), b.get(i).copied().unwrap_or(0));
@@ -34,7 +37,11 @@ pub fn is_newer(latest: &str, current: &str) -> bool {
             return x > y;
         }
     }
-    false
+    match (pa, pb) {
+        (None, Some(_)) => true,
+        (Some(x), Some(y)) => x > y,
+        _ => false,
+    }
 }
 
 fn fetch() -> Result<UpdateStatus, String> {
@@ -87,5 +94,11 @@ mod tests {
         assert!(is_newer("0.1.1", "0.1"));
         assert!(!is_newer("v0.1.0", "0.1.0"));
         assert!(!is_newer("0.0.9", "0.1.0"));
+        // A final release supersedes its own beta, but not the other way round.
+        assert!(is_newer("v1.0.0", "1.0.0-beta"));
+        assert!(!is_newer("1.0.0-beta", "1.0.0"));
+        assert!(!is_newer("v1.0.0-beta", "1.0.0-beta"));
+        assert!(is_newer("1.0.0-beta.2", "1.0.0-beta.1"));
+        assert!(is_newer("1.0.1-beta", "1.0.0"));
     }
 }
