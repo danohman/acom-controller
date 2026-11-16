@@ -11,6 +11,7 @@ mod sim;
 mod state;
 mod icon;
 mod theme;
+mod update;
 mod widgets;
 
 fn main() -> eframe::Result {

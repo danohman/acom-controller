@@ -1,9 +1,9 @@
 [package]
 name = "acom-controller"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 description = "Modern remote controller for ACOM solid-state amplifiers"
-license = "MIT"
+license = "GPL-3.0-or-later"
 
 [dependencies]
 anyhow = "1"
@@ -17,6 +17,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 serialport = "4.10"
 rodio = { version = "0.23", default-features = false, features = ["playback"] }
 tracing = "0.1"
+ureq = "3"
 tracing-subscriber = "0.3"
 
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]

@@ -11,6 +11,10 @@ pub fn apply(ctx: &egui::Context, dark: bool, scale: f32) {
         v.faint_bg_color = Color32::from_rgb(22, 25, 31);
         v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, Color32::from_rgb(40, 45, 56));
     }
+    if !dark {
+        // Black text so the light theme is easy to read.
+        v.override_text_color = Some(Color32::BLACK);
+    }
     let r = CornerRadius::same(7);
     v.widgets.noninteractive.corner_radius = r;
     v.widgets.inactive.corner_radius = r;

@@ -75,6 +75,8 @@ pub struct Config {
     pub sound_swr: bool,
     pub sound_link: bool,
 
+    /// Look for a newer GitHub release at startup.
+    pub check_updates: bool,
     pub tray_enabled: bool,
     /// Closing the window hides it to the tray instead of quitting.
     pub close_to_tray: bool,
@@ -114,6 +116,7 @@ impl Default for Config {
             sound_faults: true,
             sound_swr: true,
             sound_link: true,
+            check_updates: true,
             tray_enabled: true,
             close_to_tray: false,
         }

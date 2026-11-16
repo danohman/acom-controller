@@ -258,6 +258,19 @@ impl AmpModel {
         }
     }
 
+    /// Rated (nominal) output power in watts, taken from the model number.
+    pub fn rated_w(self) -> f32 {
+        match self {
+            Self::Acom600S | Self::Acom600SNewLpf => 600.0,
+            Self::Acom700S => 700.0,
+            Self::Acom500S => 500.0,
+            Self::Acom1200S => 1200.0,
+            Self::Acom1400S => 1400.0,
+            Self::Acom2020S => 2000.0,
+            Self::Unknown(_) => 1200.0,
+        }
+    }
+
     /// The 2020S reports PAM1 current in units of 10 mA.
     pub fn current_scale(self) -> f32 {
         if self == Self::Acom2020S { 0.01 } else { 0.001 }

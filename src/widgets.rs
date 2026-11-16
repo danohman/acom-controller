@@ -17,15 +17,6 @@ pub struct Zones {
 
 impl Zones {
     pub const NONE: Zones = Zones { warn: f32::INFINITY, crit: f32::INFINITY };
-    fn color(&self, v: f32) -> Color32 {
-        if v >= self.crit {
-            RED
-        } else if v >= self.warn {
-            AMBER
-        } else {
-            GREEN
-        }
-    }
 }
 
 pub struct Meter<'a> {
@@ -51,19 +42,49 @@ impl Meter<'_> {
 
         // Label and value share one text row (vertically centred), with the bar below it.
         let row_y = rect.top() + 9.0;
-        p.text(Pos2::new(rect.left() + 2.0, row_y), Align2::LEFT_CENTER, self.label, FontId::proportional(12.0), MUTED);
-        p.text(Pos2::new(rect.right() - 2.0, row_y), Align2::RIGHT_CENTER, &self.text, FontId::monospace(14.0), fg);
+        p.text(Pos2::new(rect.left() + 2.0, row_y), Align2::LEFT_CENTER, self.label, FontId::proportional(12.0), vis.strong_text_color());
+        p.text(Pos2::new(rect.right() - 2.0, row_y), Align2::RIGHT_CENTER, &self.text, FontId::monospace(14.0), vis.strong_text_color());
         let bar = Rect::from_min_max(
             Pos2::new(rect.left(), rect.bottom() - 14.0),
             Pos2::new(rect.right(), rect.bottom() - 2.0),
         );
-        p.rect_filled(bar, r, track);
         let frac = |v: f32| ((v - self.min) / (self.max - self.min)).clamp(0.0, 1.0);
         let f = frac(self.value);
-        if f > 0.0 {
-            // One smooth rounded fill, coloured by the zone the value is in.
-            let fill = Rect::from_min_max(bar.min, Pos2::new((bar.left() + f * bar.width()).max(bar.left() + 10.0), bar.max.y));
-            p.rect_filled(fill, r, self.zones.color(self.value));
+        let x_at = |fr: f32| bar.left() + fr * bar.width();
+        if self.zones.warn.is_infinite() {
+            p.rect_filled(bar, r, track);
+            if f > 0.0 {
+                let fill = Rect::from_min_max(bar.min, Pos2::new(x_at(f).max(bar.left() + 10.0), bar.max.y));
+                p.rect_filled(fill, r, GREEN);
+            }
+        } else {
+            // Segmented scale: dim green/amber/red zones with a bright fill up to the value.
+            let w = frac(self.zones.warn);
+            let c = frac(self.zones.crit);
+            let segs = [(0.0, w, GREEN), (w, c, AMBER), (c, 1.0, RED)];
+            for (i, (a, b, col)) in segs.into_iter().enumerate() {
+                if b <= a {
+                    continue;
+                }
+                let seg_r = CornerRadius {
+                    nw: if a == 0.0 { 3 } else { 0 },
+                    sw: if a == 0.0 { 3 } else { 0 },
+                    ne: if b >= 1.0 { 3 } else { 0 },
+                    se: if b >= 1.0 { 3 } else { 0 },
+                };
+                let seg = Rect::from_min_max(Pos2::new(x_at(a), bar.top()), Pos2::new(x_at(b), bar.bottom()));
+                p.rect_filled(seg, seg_r, track.lerp_to_gamma(col, 0.22));
+                if f > a {
+                    let part = Rect::from_min_max(seg.min, Pos2::new(x_at(f.min(b)), bar.bottom()));
+                    p.rect_filled(part, seg_r, col);
+                }
+                if i > 0 {
+                    p.line_segment(
+                        [Pos2::new(x_at(a), bar.top()), Pos2::new(x_at(a), bar.bottom())],
+                        egui::Stroke::new(1.0, vis.panel_fill),
+                    );
+                }
+            }
         }
         if let Some(pk) = self.peak {
             let x = bar.left() + frac(pk) * bar.width();

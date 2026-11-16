@@ -4,7 +4,7 @@ use super::{App, sev_color};
 use crate::protocol::commands::{self, Beep};
 use crate::protocol::errors;
 use crate::protocol::messages::{BAUD_TABLE, addr};
-use crate::widgets::{AMBER, GREEN, MUTED, RED};
+use crate::widgets::{self, GREEN, MUTED, RED};
 use eframe::egui::{self, RichText};
 use std::time::{Duration, Instant};
 
@@ -19,6 +19,28 @@ pub struct AmpEdit {
     buzzer: u8,
     names: [String; 4],
     hello: String,
+    tab: AmpTab,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum AmpTab {
+    #[default]
+    Operation,
+    Cat,
+    Identity,
+    Antennas,
+}
+
+impl AmpTab {
+    const ALL: [AmpTab; 4] = [Self::Operation, Self::Cat, Self::Identity, Self::Antennas];
+    fn label(self) -> &'static str {
+        match self {
+            Self::Operation => "Operation",
+            Self::Cat => "CAT interface",
+            Self::Identity => "User text",
+            Self::Antennas => "Antenna names",
+        }
+    }
 }
 
 const FLAGS: [(u8, &str); 5] = [
@@ -178,6 +200,7 @@ impl App {
             polling: s.cat_polling_ms,
             buzzer: s.buzzer_volume,
             names: self.amp.antenna_names.clone(),
+            tab: AmpTab::default(),
             hello: format!("{}{}", self.amp.hello[0], self.amp.hello[1]).trim_end().to_string(),
         })
     }
@@ -194,108 +217,159 @@ impl App {
         let mut open = true;
         let mut sends: Vec<Vec<u8>> = Vec::new();
         let mut refresh = false;
-        egui::Window::new("Amplifier settings").open(&mut open).default_width(440.0).resizable(true).show(ctx, |ui| {
+        let builder = egui::ViewportBuilder::default()
+            .with_title("ACOM Controller – Amplifier settings")
+            .with_icon(crate::icon::window_icon())
+            .with_inner_size([700.0, 500.0])
+            .with_min_inner_size([580.0, 380.0]);
+        ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("amp_settings_viewport"), builder, |ui, _class| {
+            if ui.ctx().input(|i| i.viewport().close_requested() || i.key_pressed(egui::Key::Escape)) {
+                open = false;
+            }
             let Some(e) = self.edit.as_mut() else {
-                ui.label(RichText::new("Waiting for the amplifier's settings…").color(MUTED));
+                egui::CentralPanel::default().show_inside(ui, |ui| {
+                    ui.label(RichText::new("Waiting for the amplifier's settings…").color(MUTED));
+                });
                 return;
             };
-            if !connected {
-                ui.label(RichText::new("Not connected – changes cannot be sent.").color(AMBER));
-            }
-            ui.add_enabled_ui(connected, |ui| {
-                ui.heading("Operation");
-                for (bit, label) in FLAGS {
-                    let mut on = e.flags & (1 << bit) != 0;
-                    if ui.checkbox(&mut on, label).changed() {
-                        e.flags = (e.flags & !(1 << bit)) | ((on as u16) << bit);
+            egui::Panel::left("amp_settings_nav").resizable(false).exact_size(160.0).show_inside(ui, |ui| {
+                ui.add_space(8.0);
+                for tab in AmpTab::ALL {
+                    if tab == AmpTab::Antennas && !multi_ant {
+                        continue;
                     }
-                }
-                ui.horizontal(|ui| {
-                    ui.label("Buzzer volume");
-                    ui.add(egui::Slider::new(&mut e.buzzer, 0..=100).suffix(" %"));
-                    if ui.button("Set & test").clicked() {
-                        sends.push(commands::buzzer(Beep::Pulse, e.buzzer));
-                        refresh = true;
-                    }
-                });
-                if ui.button("Apply operation settings").clicked() {
-                    sends.push(commands::set_user_flags(e.flags));
-                    refresh = true;
-                }
-                ui.separator();
-
-                ui.heading("CAT interface");
-                ui.horizontal(|ui| {
-                    ui.label("Interface");
-                    egui::ComboBox::from_id_salt("cat_if")
-                        .selected_text(IFACES.get(e.iface as usize).copied().unwrap_or("?"))
-                        .show_ui(ui, |ui| {
-                            for (i, n) in IFACES.iter().enumerate() {
-                                ui.selectable_value(&mut e.iface, i as u8, *n);
-                            }
-                        });
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Command set");
-                    egui::ComboBox::from_id_salt("cat_set")
-                        .selected_text(CAT_SETS.get(e.cmd_set as usize).copied().unwrap_or("Other"))
-                        .show_ui(ui, |ui| {
-                            for (i, n) in CAT_SETS.iter().enumerate() {
-                                ui.selectable_value(&mut e.cmd_set, i as u8, *n);
-                            }
-                        });
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Baud rate");
-                    let cur = BAUD_TABLE.iter().find(|(c, _)| *c == e.baud).map(|x| x.1).unwrap_or("?");
-                    egui::ComboBox::from_id_salt("cat_baud").selected_text(cur).show_ui(ui, |ui| {
-                        for (c, n) in BAUD_TABLE {
-                            ui.selectable_value(&mut e.baud, c, n);
-                        }
-                    });
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Byte spacing");
-                    ui.add(egui::DragValue::new(&mut e.spacing).range(0..=65535).suffix(" µs"));
-                    ui.label("Polling");
-                    ui.add(egui::DragValue::new(&mut e.polling).range(0..=65535).suffix(" ms"));
-                });
-                if ui.button("Apply CAT settings").clicked() {
-                    let v = ((e.iface as u16 & 0xF) << 12) | ((e.cmd_set as u16 & 0xF) << 8) | ((e.baud as u16 & 0xF) << 4);
-                    sends.push(commands::set_cat_settings_1(v));
-                    sends.push(commands::set_cat_byte_spacing_us(e.spacing));
-                    sends.push(commands::set_cat_polling_ms(e.polling));
-                    refresh = true;
-                }
-                ui.separator();
-
-                ui.heading("User text");
-                ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut e.hello).char_limit(30).desired_width(260.0));
-                    if ui.button("Apply").clicked() {
-                        sends.extend(commands::hello_message(&e.hello));
-                        refresh = true;
-                    }
-                });
-                ui.label(RichText::new("Up to 30 characters, shown on the amplifier (for example a callsign).").size(12.0).color(MUTED));
-
-                if multi_ant {
-                    ui.separator();
-                    ui.heading("Antenna names");
-                    for (i, n) in e.names.iter_mut().enumerate() {
-                        ui.horizontal(|ui| {
-                            ui.label(format!("Antenna {}", i + 1));
-                            ui.add(egui::TextEdit::singleline(n).char_limit(12).desired_width(140.0));
-                        });
-                    }
-                    if ui.button("Apply antenna names").clicked() {
-                        sends.push(commands::antenna_names(&e.names));
-                        refresh = true;
+                    let sel = e.tab == tab;
+                    let btn = egui::Button::new(RichText::new(tab.label()).size(14.0).strong())
+                        .selected(sel)
+                        .frame(sel)
+                        .min_size(egui::vec2(ui.available_width(), 32.0));
+                    if ui.add(btn).clicked() {
+                        e.tab = tab;
                     }
                 }
             });
-            ui.add_space(4.0);
-            ui.label(RichText::new("Changes are written to the amplifier's memory.").size(12.0).color(if connected { GREEN } else { RED }));
+            egui::CentralPanel::default().show_inside(ui, |ui| {
+                egui::Panel::bottom("amp_settings_foot").show_inside(ui, |ui| {
+                    ui.add_space(4.0);
+                    if connected {
+                        ui.label(RichText::new("Changes are written to the amplifier's memory.").size(12.0).color(GREEN));
+                    } else {
+                        ui.label(RichText::new("Not connected – changes cannot be sent.").size(12.0).color(RED));
+                    }
+                });
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    ui.add_space(4.0);
+                    ui.heading(e.tab.label());
+                    ui.add_space(6.0);
+                    ui.add_enabled_ui(connected, |ui| match e.tab {
+                        AmpTab::Operation => {
+                            widgets::card(ui, "Behaviour", |ui| {
+                                for (bit, label) in FLAGS {
+                                    let mut on = e.flags & (1 << bit) != 0;
+                                    if ui.checkbox(&mut on, label).changed() {
+                                        e.flags = (e.flags & !(1 << bit)) | ((on as u16) << bit);
+                                    }
+                                }
+                                ui.add_space(4.0);
+                                if ui.button("Apply").clicked() {
+                                    sends.push(commands::set_user_flags(e.flags));
+                                    refresh = true;
+                                }
+                            });
+                            ui.add_space(8.0);
+                            widgets::card(ui, "Buzzer", |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label("Volume");
+                                    ui.add(egui::Slider::new(&mut e.buzzer, 0..=100).suffix(" %"));
+                                    if ui.button("Set & test").clicked() {
+                                        sends.push(commands::buzzer(Beep::Pulse, e.buzzer));
+                                        refresh = true;
+                                    }
+                                });
+                            });
+                        }
+                        AmpTab::Cat => {
+                            widgets::card(ui, "Transceiver interface", |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label("Interface");
+                                    egui::ComboBox::from_id_salt("cat_if")
+                                        .selected_text(IFACES.get(e.iface as usize).copied().unwrap_or("?"))
+                                        .show_ui(ui, |ui| {
+                                            for (i, n) in IFACES.iter().enumerate() {
+                                                ui.selectable_value(&mut e.iface, i as u8, *n);
+                                            }
+                                        });
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.label("Command set");
+                                    egui::ComboBox::from_id_salt("cat_set")
+                                        .selected_text(CAT_SETS.get(e.cmd_set as usize).copied().unwrap_or("Other"))
+                                        .show_ui(ui, |ui| {
+                                            for (i, n) in CAT_SETS.iter().enumerate() {
+                                                ui.selectable_value(&mut e.cmd_set, i as u8, *n);
+                                            }
+                                        });
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.label("Baud rate");
+                                    let cur = BAUD_TABLE.iter().find(|(c, _)| *c == e.baud).map(|x| x.1).unwrap_or("?");
+                                    egui::ComboBox::from_id_salt("cat_baud").selected_text(cur).show_ui(ui, |ui| {
+                                        for (c, n) in BAUD_TABLE {
+                                            ui.selectable_value(&mut e.baud, c, n);
+                                        }
+                                    });
+                                });
+                            });
+                            ui.add_space(8.0);
+                            widgets::card(ui, "Timing", |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label("Byte spacing");
+                                    ui.add(egui::DragValue::new(&mut e.spacing).range(0..=65535).suffix(" µs"));
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.label("Polling interval");
+                                    ui.add(egui::DragValue::new(&mut e.polling).range(0..=65535).suffix(" ms"));
+                                });
+                                ui.add_space(4.0);
+                                if ui.button("Apply CAT settings").clicked() {
+                                    let v = ((e.iface as u16 & 0xF) << 12) | ((e.cmd_set as u16 & 0xF) << 8) | ((e.baud as u16 & 0xF) << 4);
+                                    sends.push(commands::set_cat_settings_1(v));
+                                    sends.push(commands::set_cat_byte_spacing_us(e.spacing));
+                                    sends.push(commands::set_cat_polling_ms(e.polling));
+                                    refresh = true;
+                                }
+                            });
+                        }
+                        AmpTab::Identity => {
+                            widgets::card(ui, "User text", |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.add(egui::TextEdit::singleline(&mut e.hello).char_limit(30).desired_width(260.0));
+                                    if ui.button("Apply").clicked() {
+                                        sends.extend(commands::hello_message(&e.hello));
+                                        refresh = true;
+                                    }
+                                });
+                                ui.label(RichText::new("Up to 30 characters, shown on the amplifier (for example a callsign).").size(12.0).color(MUTED));
+                            });
+                        }
+                        AmpTab::Antennas => {
+                            widgets::card(ui, "Antenna names", |ui| {
+                                for (i, n) in e.names.iter_mut().enumerate() {
+                                    ui.horizontal(|ui| {
+                                        ui.label(format!("Antenna {}", i + 1));
+                                        ui.add(egui::TextEdit::singleline(n).char_limit(12).desired_width(140.0));
+                                    });
+                                }
+                                ui.add_space(4.0);
+                                if ui.button("Apply antenna names").clicked() {
+                                    sends.push(commands::antenna_names(&e.names));
+                                    refresh = true;
+                                }
+                            });
+                        }
+                    });
+                });
+            });
         });
         for w in sends {
             self.send(w);

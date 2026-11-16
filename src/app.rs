@@ -8,6 +8,7 @@ use crate::protocol::errors::{self, Severity};
 use crate::protocol::messages::{AmpMode, BAUD_TABLE, addr, antenna_type_text, atac_text, atu_label_text};
 use crate::radio::{self, RadioEvent, RadioHandle};
 use crate::state::AmpState;
+use crate::update::UpdateStatus;
 use crate::widgets::{self, AMBER, BLUE, GREEN, MUTED, Meter, RED, Zones};
 use eframe::egui::{self, Color32, RichText};
 use egui_plot::{Line, Plot, PlotPoints};
@@ -23,6 +24,50 @@ enum LinkStatus {
     Connecting,
     Connected(String),
     Failed(String),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum SettingsTab {
+    #[default]
+    Connection,
+    PowerSharing,
+    Radio,
+    Display,
+    Alerts,
+    System,
+    About,
+}
+
+impl SettingsTab {
+    const ALL: [SettingsTab; 7] = [
+        Self::Connection,
+        Self::PowerSharing,
+        Self::Radio,
+        Self::Display,
+        Self::Alerts,
+        Self::System,
+        Self::About,
+    ];
+    fn label(self) -> &'static str {
+        match self {
+            Self::Connection => "Connection",
+            Self::PowerSharing => "Power & sharing",
+            Self::Radio => "Radio",
+            Self::Display => "Display",
+            Self::Alerts => "Alerts",
+            Self::System => "System",
+            Self::About => "About",
+        }
+    }
+}
+
+/// What the settings window asks the app to do after a frame.
+#[derive(Default)]
+struct SettingsFlags {
+    changed: bool,
+    reconnect: bool,
+    restart_radio: bool,
+    relayout: bool,
 }
 
 enum Pending {
@@ -46,6 +91,10 @@ pub struct App {
     ports: Vec<String>,
     ports_checked: Option<Instant>,
     show_settings: bool,
+    settings_tab: SettingsTab,
+    update: UpdateStatus,
+    update_rx: Option<std::sync::mpsc::Receiver<UpdateStatus>>,
+    update_silent: bool,
     show_log: bool,
     pending: Option<Pending>,
     comm_log: VecDeque<String>,
@@ -90,6 +139,10 @@ impl App {
             ports: Vec::new(),
             ports_checked: None,
             show_settings: false,
+            settings_tab: SettingsTab::default(),
+            update: UpdateStatus::Idle,
+            update_rx: None,
+            update_silent: false,
             show_log: false,
             pending: None,
             comm_log: VecDeque::new(),
@@ -118,6 +171,10 @@ impl App {
             app.connect(&cc.egui_ctx);
         }
         app.restart_radio(&cc.egui_ctx);
+        if app.cfg.check_updates {
+            app.update_silent = true;
+            app.start_update_check(&cc.egui_ctx);
+        }
         app
     }
 
@@ -157,6 +214,25 @@ impl App {
     fn send(&mut self, wire: Vec<u8>) {
         if let Some(l) = &self.link {
             l.send(wire);
+        }
+    }
+
+    fn start_update_check(&mut self, ctx: &egui::Context) {
+        self.update = UpdateStatus::Checking;
+        self.update_rx = Some(crate::update::spawn_check(ctx.clone()));
+    }
+
+    fn poll_update(&mut self) {
+        let Some(rx) = &self.update_rx else { return };
+        if let Ok(st) = rx.try_recv() {
+            self.update_rx = None;
+            if let UpdateStatus::Available { version, .. } = &st {
+                if self.update_silent {
+                    self.say(format!("Version {version} is available – see Settings › About"));
+                }
+            }
+            self.update_silent = false;
+            self.update = st;
         }
     }
 
@@ -367,12 +443,7 @@ impl App {
                 widgets::chip(ui, &format!("{} remote client(s)", self.clients), BLUE);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let gear = if self.cfg.compact {
-                    widgets::icon_button(ui, "⚙", "Settings")
-                } else {
-                    ui.button("⚙ Settings")
-                };
-                if gear.clicked() {
+                if ui.button("⚙ Settings").clicked() {
                     self.show_settings = true;
                 }
                 if self.link.is_some() {
@@ -431,14 +502,14 @@ impl App {
         let peak = self.cfg.peak_hold.then_some(self.amp.peak_forward_w);
         widgets::card(ui, "RF power", |ui| {
             ui.horizontal(|ui| {
-                widgets::readout(ui, "FORWARD", &format!("{:.0} W", t.forward_w), Color32::WHITE);
+                widgets::readout(ui, "FORWARD", &format!("{:.0} W", t.forward_w), ui.visuals().strong_text_color());
                 ui.add_space(18.0);
-                widgets::readout(ui, "REFLECTED", &format!("{:.0} W", t.reflected_w), if t.reflected_w > 20.0 { AMBER } else { Color32::WHITE });
+                widgets::readout(ui, "REFLECTED", &format!("{:.0} W", t.reflected_w), if t.reflected_w > 20.0 { AMBER } else { ui.visuals().strong_text_color() });
                 ui.add_space(18.0);
                 let swr_col = if t.swr >= 3.0 { RED } else if t.swr >= self.cfg.swr_alert { AMBER } else { GREEN };
                 widgets::readout(ui, "SWR", &format!("{:.2}", t.swr.max(1.0)), swr_col);
                 ui.add_space(18.0);
-                widgets::readout(ui, "DRIVE", &format!("{:.1} W", t.input_w), Color32::WHITE);
+                widgets::readout(ui, "DRIVE", &format!("{:.1} W", t.input_w), ui.visuals().strong_text_color());
             });
             ui.add_space(6.0);
             Meter {
@@ -447,7 +518,7 @@ impl App {
                 min: 0.0,
                 max: fs,
                 text: format!("{:.0} W", t.forward_w),
-                zones: Zones { warn: fs * 0.85, crit: fs * 0.97 },
+                zones: Zones { warn: model.rated_w() * 0.80, crit: model.rated_w() },
                 peak,
                 height: 40.0,
             }
@@ -524,19 +595,19 @@ impl App {
             .show(ui);
             ui.add_space(4.0);
             ui.horizontal_wrapped(|ui| {
-                widgets::readout(ui, "26 V RAIL", &format!("{:.1} V", t.vcc26_v), Color32::WHITE);
+                widgets::readout(ui, "26 V RAIL", &format!("{:.1} V", t.vcc26_v), ui.visuals().strong_text_color());
                 ui.add_space(14.0);
-                widgets::readout(ui, "5 V RAIL", &format!("{:.2} V", t.vcc5_v), Color32::WHITE);
+                widgets::readout(ui, "5 V RAIL", &format!("{:.2} V", t.vcc5_v), ui.visuals().strong_text_color());
                 ui.add_space(14.0);
-                widgets::readout(ui, "DISSIPATION", &format!("{:.0} W", t.dissipation_w()), Color32::WHITE);
+                widgets::readout(ui, "DISSIPATION", &format!("{:.0} W", t.dissipation_w()), ui.visuals().strong_text_color());
                 ui.add_space(14.0);
-                widgets::readout(ui, "FAN", &format!("{}/4", t.fan_speed), Color32::WHITE);
+                widgets::readout(ui, "FAN", &format!("{}/4", t.fan_speed), ui.visuals().strong_text_color());
                 ui.add_space(14.0);
                 widgets::readout(
                     ui,
                     "LPF",
                     &if t.lpf_channel == 0 { "–".into() } else { t.lpf_channel.to_string() },
-                    if t.lpf_tuned() || t.lpf_channel == 0 { Color32::WHITE } else { AMBER },
+                    if t.lpf_tuned() || t.lpf_channel == 0 { ui.visuals().strong_text_color() } else { AMBER },
                 );
             });
         });
@@ -563,8 +634,14 @@ impl App {
                 });
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    let label = if tx_allowed { "Inhibit TX" } else { "Allow TX" };
-                    if ui.button(label).on_hover_text("Prohibit / allow entering OPERATE/TX").clicked() {
+                    // Always labelled "Inhibit TX"; filled red while TX is inhibited.
+                    let inhibit = if tx_allowed {
+                        egui::Button::new("Inhibit TX")
+                    } else {
+                        egui::Button::new(RichText::new("Inhibit TX").strong().color(Color32::WHITE)).fill(RED)
+                    };
+                    let tip = if tx_allowed { "Prohibit entering OPERATE/TX" } else { "TX is inhibited – click to allow" };
+                    if ui.add(inhibit).on_hover_text(tip).clicked() {
                         self.send(commands::set_mode(if tx_allowed { ModeRequest::ProhibitTx } else { ModeRequest::AllowTx }));
                     }
                     if ui.button("Clear faults").clicked() {
@@ -643,7 +720,7 @@ impl App {
                     ui,
                     "AMPLIFIER SENSES",
                     &amp_khz.map(|k| format!("{:.3} MHz", k as f32 / 1000.0)).unwrap_or("–".into()),
-                    Color32::WHITE,
+                    ui.visuals().strong_text_color(),
                 );
                 if self.cfg.radio_source != RadioSource::Off {
                     ui.add_space(18.0);
@@ -651,7 +728,7 @@ impl App {
                         ui,
                         "RADIO",
                         &self.radio_khz.map(|k| format!("{:.3} MHz", k as f32 / 1000.0)).unwrap_or("–".into()),
-                        Color32::WHITE,
+                        ui.visuals().strong_text_color(),
                     );
                 }
             });
@@ -814,8 +891,7 @@ impl App {
                 ui.label(RichText::new(format!("CAT baud {baud} · buzzer {}%", s.buzzer_volume)).size(12.0).color(MUTED));
             }
             if let Some(t) = &self.amp.telemetry {
-                let h = t.clock_s / 3600;
-                ui.label(RichText::new(format!("Uptime {}h {:02}m", h, (t.clock_s / 60) % 60)).size(12.0).color(MUTED));
+                ui.label(RichText::new(format!("Online time: {}", fmt_online(t.clock_s as u64))).size(12.0).color(MUTED));
             }
             ui.horizontal(|ui| {
                 ui.checkbox(&mut self.show_log, "Show communication log");
@@ -838,10 +914,18 @@ impl App {
     fn compact_view(&mut self, ui: &mut egui::Ui) {
         let connected = self.link.is_some() && self.amp.alive();
         let Some(t) = self.amp.telemetry.clone().filter(|_| self.amp.alive()) else {
-            ui.add_space(20.0);
+            ui.add_space(12.0);
             ui.vertical_centered(|ui| {
                 ui.spinner();
-                ui.label(RichText::new("Waiting for amplifier…").color(MUTED));
+                match &self.status {
+                    LinkStatus::Failed(why) => ui.label(RichText::new(format!("⚠ {why}")).color(RED).size(12.5)),
+                    _ => ui.label(RichText::new("Waiting for amplifier…").color(MUTED)),
+                };
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if widgets::icon_button(ui, "⚙", "Settings").clicked() {
+                    self.show_settings = true;
+                }
             });
             return;
         };
@@ -854,7 +938,7 @@ impl App {
         ui.spacing_mut().item_spacing = egui::vec2(6.0, 3.0);
 
         Meter { label: "FORWARD POWER", value: t.forward_w, min: 0.0, max: fs, text: format!("{:.0} W", t.forward_w),
-            zones: Zones { warn: fs * 0.85, crit: fs * 0.97 }, peak, height: 34.0 }.show(ui);
+            zones: Zones { warn: self.amp.model().rated_w() * 0.80, crit: self.amp.model().rated_w() }, peak, height: 34.0 }.show(ui);
         ui.columns(2, |cols| {
             Meter { label: "PA TEMPERATURE", value: temp_c, min: 20.0, max: 100.0, text: self.fmt_temp(temp_c),
                 zones: Zones { warn: 70.0, crit: 85.0 }, peak: None, height: 34.0 }.show(&mut cols[0]);
@@ -871,13 +955,19 @@ impl App {
         ui.add_enabled_ui(connected, |ui| {
             ui.horizontal(|ui| {
                 let name = band.map(|b| b.name).unwrap_or("–");
-                ui.label(RichText::new(format!("{name} · {:.3}–{:.3} MHz", lo as f32 / 1000.0, hi as f32 / 1000.0)).strong().size(14.0));
+                ui.label(RichText::new(format!("{name} · {:.3}–{:.3} MHz", lo as f32 / 1000.0, hi as f32 / 1000.0)).strong().size(11.5));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if multi_ant && ui.button("ANT").on_hover_text("Next antenna").clicked() {
                         self.send(commands::select(Select::NextAntenna));
                     }
                     let tip = if t.mode.is_operate() { "Switch to standby" } else { "Switch to operate" };
-                    if ui.button(RichText::new("OPR/STB").strong()).on_hover_text(tip).clicked() {
+                    let (fill, txt) = if t.mode.is_operate() {
+                        (GREEN, "OPR")
+                    } else {
+                        (Color32::from_rgb(255, 140, 0), "STB")
+                    };
+                    let btn = egui::Button::new(RichText::new(txt).strong().color(Color32::BLACK)).fill(fill);
+                    if ui.add(btn).on_hover_text(tip).clicked() {
                         self.send(commands::set_mode(if t.mode.is_operate() { ModeRequest::Standby } else { ModeRequest::OperateRx }));
                     }
                 });
@@ -887,9 +977,9 @@ impl App {
         // Status strip: mode, amplifier state, SWR, drive.
         let alarm = self.amp.active_codes.first().copied().or((t.alarm_code != 0).then_some(t.alarm_code));
         let (mode_txt, mode_col) = match t.mode {
-            AmpMode::OperateTx => (t.mode.label(), RED),
-            AmpMode::OperateRx => (t.mode.label(), GREEN),
-            AmpMode::Standby => (t.mode.label(), BLUE),
+            AmpMode::OperateTx => ("TX", RED),
+            AmpMode::OperateRx => ("RX", GREEN),
+            AmpMode::Standby => ("STB", Color32::from_rgb(255, 140, 0)),
             m => (m.label(), AMBER),
         };
         let swr = t.swr.max(1.0);
@@ -901,6 +991,10 @@ impl App {
                 None => ui.label(RichText::new("AMPLIFIER NORMAL").color(GREEN).strong().size(12.5)),
             };
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if widgets::icon_button(ui, "⚙", "Settings").clicked() {
+                    self.show_settings = true;
+                }
+                ui.add_space(6.0);
                 ui.label(RichText::new(format!("{:.1} W", t.input_w)).monospace().strong());
                 ui.label(RichText::new("DRIVE").size(11.5).color(MUTED));
                 ui.add_space(6.0);
@@ -911,176 +1005,54 @@ impl App {
     }
 
     fn settings_window(&mut self, ctx: &egui::Context) {
-        let mut open = self.show_settings;
-        let mut changed = false;
-        let mut reconnect = false;
-        let mut restart_radio = false;
-        let mut relayout = false;
-        egui::Window::new("Settings").open(&mut open).default_size([440.0, 700.0]).resizable(true).show(ctx, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                ui.heading("Connection");
-                ui.horizontal(|ui| {
-                    for (c, n) in [(Connection::Serial, "Serial port"), (Connection::Remote, "Remote"), (Connection::Demo, "Demo")] {
-                        if ui.selectable_value(&mut self.cfg.connection, c, n).changed() {
-                            changed = true;
-                            reconnect = true;
-                        }
+        if !self.show_settings {
+            if self.settings_dirty {
+                self.settings_dirty = false;
+                self.cfg.save();
+            }
+            return;
+        }
+        let mut open = true;
+        let mut f = SettingsFlags::default();
+        // A real OS window of its own, so it is not limited by the (possibly tiny) main window.
+        let builder = egui::ViewportBuilder::default()
+            .with_title("ACOM Controller – Settings")
+            .with_icon(crate::icon::window_icon())
+            .with_inner_size([760.0, 580.0])
+            .with_min_inner_size([620.0, 420.0]);
+        ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("settings_viewport"), builder, |ui, _class| {
+            if ui.ctx().input(|i| i.viewport().close_requested()) {
+                open = false;
+            }
+            egui::Panel::left("settings_nav").resizable(false).exact_size(160.0).show_inside(ui, |ui| {
+                ui.add_space(8.0);
+                for tab in SettingsTab::ALL {
+                    let sel = self.settings_tab == tab;
+                    let btn = egui::Button::new(RichText::new(tab.label()).size(14.0).strong())
+                        .selected(sel)
+                        .frame(sel)
+                        .min_size(egui::vec2(ui.available_width(), 32.0));
+                    if ui.add(btn).clicked() {
+                        self.settings_tab = tab;
                     }
-                });
-                match self.cfg.connection {
-                    Connection::Serial => {
-                        ui.horizontal(|ui| {
-                            ui.label("COM port");
-                            egui::ComboBox::from_id_salt("port")
-                                .selected_text(if self.cfg.com_port.is_empty() { "select…" } else { &self.cfg.com_port })
-                                .show_ui(ui, |ui| {
-                                    for p in self.ports.clone() {
-                                        if ui.selectable_value(&mut self.cfg.com_port, p.clone(), p).changed() {
-                                            changed = true;
-                                            reconnect = true;
-                                        }
-                                    }
-                                });
-                            if ui.button("↻").on_hover_text("Rescan ports").clicked() {
-                                self.refresh_ports();
-                            }
-                        });
-                        ui.label(RichText::new("9600 baud, 8N1 (fixed by the amplifier)").size(12.0).color(MUTED));
-                        changed |= ui.checkbox(&mut self.cfg.share_enabled, "Share this amplifier over the network").changed();
-                        if self.cfg.share_enabled {
-                            ui.horizontal(|ui| {
-                                ui.label("TCP port");
-                                changed |= ui.add(egui::DragValue::new(&mut self.cfg.share_port).range(1024..=65535)).changed();
-                            });
-                            ui.label(RichText::new("Applies on next connect. No authentication – use only on a trusted network.").size(12.0).color(AMBER));
-                        }
-                        changed |= ui.checkbox(&mut self.cfg.power_on_enabled, "Enable remote power-on button").changed();
-                        if self.cfg.power_on_enabled {
-                            ui.horizontal(|ui| {
-                                ui.label("Pulse line");
-                                for (v, n) in [(PowerPulse::Dtr, "DTR"), (PowerPulse::Rts, "RTS"), (PowerPulse::Both, "DTR+RTS")] {
-                                    changed |= ui.selectable_value(&mut self.cfg.power_pulse, v, n).changed();
-                                }
-                                changed |= ui.add(egui::DragValue::new(&mut self.cfg.power_pulse_ms).range(100..=5000).suffix(" ms")).changed();
-                                changed |= ui.checkbox(&mut self.cfg.power_hold, "Leave asserted").changed();
-                            });
-                            ui.label(RichText::new("Not described in the protocol document; verify with your amplifier.").size(12.0).color(MUTED));
-                        }
-                    }
-                    Connection::Remote => {
-                        ui.horizontal(|ui| {
-                            ui.label("Host");
-                            changed |= ui.text_edit_singleline(&mut self.cfg.remote_host).changed();
-                            ui.label("Port");
-                            changed |= ui.add(egui::DragValue::new(&mut self.cfg.remote_port).range(1..=65535)).changed();
-                        });
-                    }
-                    Connection::Demo => {
-                        ui.label(RichText::new("Built-in simulated amplifier for trying the app without hardware.").color(MUTED));
-                    }
-                }
-                changed |= ui.checkbox(&mut self.cfg.auto_connect, "Connect on startup").changed();
-                changed |= ui.checkbox(&mut self.cfg.auto_reconnect, "Reconnect automatically").changed();
-                if ui.button("Apply connection").clicked() {
-                    reconnect = true;
-                }
-                ui.separator();
-
-                ui.heading("Radio integration");
-                ui.horizontal(|ui| {
-                    for (s, n) in [
-                        (RadioSource::Off, "Off"),
-                        (RadioSource::N1mmUdp, "N1MM+ UDP"),
-                        (RadioSource::Rigctld, "rigctld"),
-                        (RadioSource::SharedMemory, "Shared memory"),
-                    ]
-                    .into_iter()
-                    // The shared-memory source is Windows-only.
-                    .filter(|(s, _)| cfg!(windows) || *s != RadioSource::SharedMemory)
-                    {
-                        if ui.selectable_value(&mut self.cfg.radio_source, s, n).changed() {
-                            changed = true;
-                            restart_radio = true;
-                        }
-                    }
-                });
-                match self.cfg.radio_source {
-                    RadioSource::N1mmUdp => {
-                        ui.horizontal(|ui| {
-                            ui.label("UDP port");
-                            restart_radio |= ui.add(egui::DragValue::new(&mut self.cfg.n1mm_port).range(1..=65535)).changed();
-                        });
-                    }
-                    RadioSource::Rigctld => {
-                        ui.horizontal(|ui| {
-                            restart_radio |= ui.text_edit_singleline(&mut self.cfg.rigctld_host).changed();
-                            restart_radio |= ui.add(egui::DragValue::new(&mut self.cfg.rigctld_port).range(1..=65535)).changed();
-                        });
-                    }
-                    _ => {}
-                }
-                if matches!(self.cfg.radio_source, RadioSource::N1mmUdp | RadioSource::SharedMemory) {
-                    ui.horizontal(|ui| {
-                        ui.label("Radio");
-                        for n in 1..=2u8 {
-                            if ui.selectable_value(&mut self.cfg.radio_number, n, format!("Radio {n}")).changed() {
-                                restart_radio = true;
-                            }
-                        }
-                    });
-                }
-                changed |= restart_radio;
-                changed |= ui.checkbox(&mut self.cfg.follow_radio, "Switch amplifier band to follow the radio").changed();
-                ui.separator();
-
-                ui.heading("Display");
-                if ui.checkbox(&mut self.cfg.compact, "Compact layout (slim window)").changed() {
-                    changed = true;
-                    relayout = true;
-                }
-                changed |= ui.checkbox(&mut self.cfg.dark_mode, "Dark theme").changed();
-                changed |= ui.checkbox(&mut self.cfg.fahrenheit, "Temperatures in °F").changed();
-                changed |= ui.checkbox(&mut self.cfg.peak_hold, "Peak hold on power meter").changed();
-                changed |= ui.checkbox(&mut self.cfg.confirm_dangerous, "Confirm power off").changed();
-                ui.horizontal(|ui| {
-                    ui.label("SWR alert");
-                    changed |= ui.add(egui::Slider::new(&mut self.cfg.swr_alert, 1.5..=3.5)).changed();
-                });
-                ui.horizontal(|ui| {
-                    ui.label("UI scale");
-                    changed |= ui.add(egui::Slider::new(&mut self.cfg.ui_scale, 0.8..=1.6)).changed();
-                });
-                ui.separator();
-
-                ui.heading("Sound alerts");
-                changed |= ui.checkbox(&mut self.cfg.sound_enabled, "Play sound alerts").changed();
-                if self.cfg.sound_enabled {
-                    ui.horizontal(|ui| {
-                        ui.label("Volume");
-                        changed |= ui.add(egui::Slider::new(&mut self.cfg.sound_volume, 0.05..=1.0)).changed();
-                        if ui.button("Test").clicked() {
-                            self.sound.play(crate::sound::Alert::Test, self.cfg.sound_volume);
-                        }
-                    });
-                    changed |= ui.checkbox(&mut self.cfg.sound_faults, "Warnings and faults").changed();
-                    changed |= ui.checkbox(&mut self.cfg.sound_swr, "High SWR while transmitting").changed();
-                    changed |= ui.checkbox(&mut self.cfg.sound_link, "Amplifier link lost / restored").changed();
-                }
-                if crate::tray::SUPPORTED {
-                    ui.separator();
-                    ui.heading("System tray");
-                    changed |= ui.checkbox(&mut self.cfg.tray_enabled, "Show tray icon").changed();
-                    if self.cfg.tray_enabled {
-                        changed |= ui.checkbox(&mut self.cfg.close_to_tray, "Closing the window hides it to the tray").changed();
-                    }
-                }
-                if changed {
-                    self.settings_dirty = true;
                 }
             });
+            egui::CentralPanel::default().show_inside(ui, |ui| {
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    ui.add_space(4.0);
+                    ui.heading(self.settings_tab.label());
+                    ui.add_space(6.0);
+                    self.settings_page(ui, &mut f);
+                });
+            });
+            // Esc closes the window.
+            if ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) {
+                open = false;
+            }
         });
         self.show_settings = open;
-        if changed {
+        if f.changed {
+            self.settings_dirty = true;
             self.sync_tray(ctx);
             crate::theme::apply(ctx, self.cfg.dark_mode, self.cfg.ui_scale);
             ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(if self.cfg.always_on_top {
@@ -1093,15 +1065,292 @@ impl App {
             self.settings_dirty = false;
             self.cfg.save();
         }
-        if relayout {
+        if f.relayout {
             self.apply_layout(ctx);
         }
-        if restart_radio {
+        if f.restart_radio {
             self.restart_radio(ctx);
         }
-        if reconnect {
+        if f.reconnect {
             self.cfg.save();
             self.connect(ctx);
+        }
+    }
+
+    fn settings_page(&mut self, ui: &mut egui::Ui, f: &mut SettingsFlags) {
+        match self.settings_tab {
+            SettingsTab::Connection => {
+                widgets::card(ui, "Amplifier link", |ui| {
+                    ui.horizontal(|ui| {
+                        for (c, n) in [(Connection::Serial, "Serial port"), (Connection::Remote, "Remote"), (Connection::Demo, "Demo")] {
+                            if ui.selectable_value(&mut self.cfg.connection, c, n).changed() {
+                                f.changed = true;
+                                f.reconnect = true;
+                            }
+                        }
+                    });
+                    ui.add_space(4.0);
+                    match self.cfg.connection {
+                        Connection::Serial => {
+                            ui.horizontal(|ui| {
+                                ui.label("COM port");
+                                egui::ComboBox::from_id_salt("port")
+                                    .selected_text(if self.cfg.com_port.is_empty() { "select…" } else { &self.cfg.com_port })
+                                    .show_ui(ui, |ui| {
+                                        for p in self.ports.clone() {
+                                            if ui.selectable_value(&mut self.cfg.com_port, p.clone(), p).changed() {
+                                                f.changed = true;
+                                                f.reconnect = true;
+                                            }
+                                        }
+                                    });
+                                if ui.button("↻").on_hover_text("Rescan ports").clicked() {
+                                    self.refresh_ports();
+                                }
+                            });
+                            ui.label(RichText::new("9600 baud, 8N1 (fixed by the amplifier)").size(12.0).color(MUTED));
+                        }
+                        Connection::Remote => {
+                            ui.horizontal(|ui| {
+                                ui.label("Host");
+                                f.changed |= ui.text_edit_singleline(&mut self.cfg.remote_host).changed();
+                                ui.label("Port");
+                                f.changed |= ui.add(egui::DragValue::new(&mut self.cfg.remote_port).range(1..=65535)).changed();
+                            });
+                            ui.label(RichText::new("Connect to another copy of this program that is sharing its amplifier.").size(12.0).color(MUTED));
+                        }
+                        Connection::Demo => {
+                            ui.label(RichText::new("Built-in simulated amplifier for trying the app without hardware.").color(MUTED));
+                        }
+                    }
+                    ui.add_space(4.0);
+                    if ui.button("Apply connection").clicked() {
+                        f.reconnect = true;
+                    }
+                });
+                ui.add_space(8.0);
+                widgets::card(ui, "Startup and recovery", |ui| {
+                    f.changed |= ui.checkbox(&mut self.cfg.auto_connect, "Connect on startup").changed();
+                    f.changed |= ui.checkbox(&mut self.cfg.auto_reconnect, "Reconnect automatically after a lost link").changed();
+                });
+            }
+            SettingsTab::PowerSharing => {
+                let serial = self.cfg.connection == Connection::Serial;
+                if !serial {
+                    ui.label(RichText::new("These options apply to a direct serial-port connection.").color(MUTED));
+                    ui.add_space(6.0);
+                }
+                ui.add_enabled_ui(serial, |ui| {
+                    widgets::card(ui, "Network sharing", |ui| {
+                        f.changed |= ui.checkbox(&mut self.cfg.share_enabled, "Share this amplifier over the network").changed();
+                        if self.cfg.share_enabled {
+                            ui.horizontal(|ui| {
+                                ui.label("TCP port");
+                                f.changed |= ui.add(egui::DragValue::new(&mut self.cfg.share_port).range(1024..=65535)).changed();
+                            });
+                            ui.label(RichText::new("Applies on next connect. No authentication – use only on a trusted network.").size(12.0).color(AMBER));
+                        }
+                    });
+                    ui.add_space(8.0);
+                    widgets::card(ui, "Remote power-on", |ui| {
+                        f.changed |= ui.checkbox(&mut self.cfg.power_on_enabled, "Enable remote power-on button").changed();
+                        if self.cfg.power_on_enabled {
+                            ui.horizontal(|ui| {
+                                ui.label("Pulse line");
+                                for (v, n) in [(PowerPulse::Dtr, "DTR"), (PowerPulse::Rts, "RTS"), (PowerPulse::Both, "DTR+RTS")] {
+                                    f.changed |= ui.selectable_value(&mut self.cfg.power_pulse, v, n).changed();
+                                }
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Pulse length");
+                                f.changed |= ui.add(egui::DragValue::new(&mut self.cfg.power_pulse_ms).range(100..=5000).suffix(" ms")).changed();
+                                f.changed |= ui.checkbox(&mut self.cfg.power_hold, "Leave asserted").changed();
+                            });
+                            ui.label(RichText::new("Not described in the protocol document; verify with your amplifier.").size(12.0).color(MUTED));
+                        }
+                    });
+                });
+            }
+            SettingsTab::Radio => {
+                widgets::card(ui, "Frequency source", |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        for (s, n) in [
+                            (RadioSource::Off, "Off"),
+                            (RadioSource::N1mmUdp, "N1MM+ UDP"),
+                            (RadioSource::Rigctld, "rigctld"),
+                            (RadioSource::SharedMemory, "Shared memory"),
+                        ]
+                        .into_iter()
+                        // The shared-memory source is Windows-only.
+                        .filter(|(s, _)| cfg!(windows) || *s != RadioSource::SharedMemory)
+                        {
+                            if ui.selectable_value(&mut self.cfg.radio_source, s, n).changed() {
+                                f.changed = true;
+                                f.restart_radio = true;
+                            }
+                        }
+                    });
+                    ui.add_space(4.0);
+                    match self.cfg.radio_source {
+                        RadioSource::N1mmUdp => {
+                            ui.horizontal(|ui| {
+                                ui.label("UDP port");
+                                f.restart_radio |= ui.add(egui::DragValue::new(&mut self.cfg.n1mm_port).range(1..=65535)).changed();
+                            });
+                        }
+                        RadioSource::Rigctld => {
+                            ui.horizontal(|ui| {
+                                ui.label("Host");
+                                f.restart_radio |= ui.text_edit_singleline(&mut self.cfg.rigctld_host).changed();
+                                ui.label("Port");
+                                f.restart_radio |= ui.add(egui::DragValue::new(&mut self.cfg.rigctld_port).range(1..=65535)).changed();
+                            });
+                        }
+                        _ => {}
+                    }
+                    if matches!(self.cfg.radio_source, RadioSource::N1mmUdp | RadioSource::SharedMemory) {
+                        ui.horizontal(|ui| {
+                            ui.label("Radio");
+                            for n in 1..=2u8 {
+                                if ui.selectable_value(&mut self.cfg.radio_number, n, format!("Radio {n}")).changed() {
+                                    f.restart_radio = true;
+                                }
+                            }
+                        });
+                    }
+                    f.changed |= f.restart_radio;
+                });
+                ui.add_space(8.0);
+                widgets::card(ui, "Band following", |ui| {
+                    f.changed |= ui.checkbox(&mut self.cfg.follow_radio, "Switch amplifier band to follow the radio").changed();
+                });
+            }
+            SettingsTab::Display => {
+                widgets::card(ui, "Layout", |ui| {
+                    if ui.checkbox(&mut self.cfg.compact, "Compact layout (slim window)").changed() {
+                        f.changed = true;
+                        f.relayout = true;
+                    }
+                    ui.horizontal(|ui| {
+                        ui.label("UI scale");
+                        f.changed |= ui.add(egui::Slider::new(&mut self.cfg.ui_scale, 0.8..=1.6)).changed();
+                    });
+                    f.changed |= ui.checkbox(&mut self.cfg.dark_mode, "Dark theme").changed();
+                });
+                ui.add_space(8.0);
+                widgets::card(ui, "Readouts", |ui| {
+                    f.changed |= ui.checkbox(&mut self.cfg.fahrenheit, "Temperatures in °F").changed();
+                    f.changed |= ui.checkbox(&mut self.cfg.peak_hold, "Peak hold on power meter").changed();
+                });
+            }
+            SettingsTab::Alerts => {
+                widgets::card(ui, "Warnings", |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("SWR alert threshold");
+                        f.changed |= ui.add(egui::Slider::new(&mut self.cfg.swr_alert, 1.5..=3.5)).changed();
+                    });
+                    f.changed |= ui.checkbox(&mut self.cfg.confirm_dangerous, "Ask for confirmation before powering off").changed();
+                });
+                ui.add_space(8.0);
+                widgets::card(ui, "Sound", |ui| {
+                    f.changed |= ui.checkbox(&mut self.cfg.sound_enabled, "Play sound alerts").changed();
+                    if self.cfg.sound_enabled {
+                        ui.horizontal(|ui| {
+                            ui.label("Volume");
+                            f.changed |= ui.add(egui::Slider::new(&mut self.cfg.sound_volume, 0.05..=1.0)).changed();
+                            if ui.button("Test").clicked() {
+                                self.sound.play(crate::sound::Alert::Test, self.cfg.sound_volume);
+                            }
+                        });
+                        f.changed |= ui.checkbox(&mut self.cfg.sound_faults, "Warnings and faults").changed();
+                        f.changed |= ui.checkbox(&mut self.cfg.sound_swr, "High SWR while transmitting").changed();
+                        f.changed |= ui.checkbox(&mut self.cfg.sound_link, "Amplifier link lost / restored").changed();
+                    }
+                });
+            }
+            SettingsTab::System => {
+                widgets::card(ui, "Window", |ui| {
+                    f.changed |= ui.checkbox(&mut self.cfg.always_on_top, "Keep window on top of other windows").changed();
+                });
+                if crate::tray::SUPPORTED {
+                    ui.add_space(8.0);
+                    widgets::card(ui, "System tray", |ui| {
+                        f.changed |= ui.checkbox(&mut self.cfg.tray_enabled, "Show tray icon").changed();
+                        if self.cfg.tray_enabled {
+                            f.changed |= ui.checkbox(&mut self.cfg.close_to_tray, "Closing the window hides it to the tray").changed();
+                        }
+                    });
+                }
+            }
+            SettingsTab::About => {
+                widgets::card(ui, "About", |ui| {
+                    ui.horizontal(|ui| {
+                        ui.add(egui::Image::new(&self.logo).fit_to_exact_size(egui::vec2(56.0, 56.0)));
+                        ui.vertical(|ui| {
+                            ui.label(RichText::new("ACOM Controller").size(22.0).strong());
+                            ui.label(RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION"))).color(MUTED));
+                            ui.label("Remote controller for ACOM solid-state amplifiers.");
+                        });
+                    });
+                });
+                ui.add_space(8.0);
+                widgets::card(ui, "Updates", |ui| {
+                    ui.horizontal(|ui| {
+                        let checking = matches!(self.update, UpdateStatus::Checking);
+                        if ui.add_enabled(!checking, egui::Button::new("Check for new version")).clicked() {
+                            self.start_update_check(ui.ctx());
+                        }
+                        match &self.update {
+                            UpdateStatus::Idle => {}
+                            UpdateStatus::Checking => {
+                                ui.add(egui::Spinner::new());
+                                ui.label(RichText::new("Checking…").color(MUTED));
+                            }
+                            UpdateStatus::UpToDate => {
+                                ui.label(RichText::new("You are running the latest version.").color(GREEN));
+                            }
+                            UpdateStatus::Available { version, .. } => {
+                                ui.label(RichText::new(format!("Version {version} is available.")).color(AMBER).strong());
+                            }
+                            UpdateStatus::Failed(why) => {
+                                ui.label(RichText::new(format!("Check failed: {why}")).color(RED));
+                            }
+                        }
+                    });
+                    if let UpdateStatus::Available { url, .. } = &self.update {
+                        ui.hyperlink_to("Open the release page", url.as_str());
+                    }
+                    f.changed |= ui.checkbox(&mut self.cfg.check_updates, "Check for a new version when the program starts").changed();
+                    ui.label(
+                        RichText::new("Contacts GitHub (api.github.com) only; no personal information is sent.").size(12.0).color(MUTED),
+                    );
+                });
+                ui.add_space(8.0);
+                widgets::card(ui, "Copyright and license", |ui| {
+                    ui.label(RichText::new("Copyright © 2026 Dan Muntz (WD4DAN)").strong());
+                    ui.add_space(4.0);
+                    ui.label(
+                        "This program is free software: you can redistribute it and/or modify it under the terms of the \
+                         GNU General Public License as published by the Free Software Foundation, either version 3 of the \
+                         License, or (at your option) any later version.",
+                    );
+                    ui.add_space(4.0);
+                    ui.label(
+                        "This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; \
+                         without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. \
+                         See the GNU General Public License for more details.",
+                    );
+                    ui.add_space(4.0);
+                    ui.hyperlink_to("GNU General Public License, version 3", "https://www.gnu.org/licenses/gpl-3.0.html");
+                    ui.hyperlink_to("Source code", "https://github.com/danohman/acom-controller");
+                });
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new("ACOM is a trademark of its owner. This is an independent, unofficial program.")
+                        .size(12.0)
+                        .color(MUTED),
+                );
+            }
         }
     }
 
@@ -1163,6 +1412,24 @@ impl App {
     }
 }
 
+/// Elapsed seconds as years, months, days, hours and minutes (365-day years, 30-day months),
+/// leaving out leading zero units, e.g. "11 months 20 days 4 hours 14 mins".
+fn fmt_online(secs: u64) -> String {
+    let mins = secs / 60;
+    let (years, rest) = (mins / (365 * 1440), mins % (365 * 1440));
+    let (months, rest) = (rest / (30 * 1440), rest % (30 * 1440));
+    let (days, rest) = (rest / 1440, rest % 1440);
+    let (hours, mins) = (rest / 60, rest % 60);
+    let units = [(years, "year"), (months, "month"), (days, "day"), (hours, "hour"), (mins, "min")];
+    let mut parts: Vec<String> = Vec::new();
+    for (n, name) in units {
+        if n > 0 || (!parts.is_empty() && name == "min") {
+            parts.push(format!("{n} {name}{}", if n == 1 { "" } else { "s" }));
+        }
+    }
+    if parts.is_empty() { "0 mins".to_string() } else { parts.join(" ") }
+}
+
 fn sev_color(s: Severity) -> Color32 {
     match s {
         Severity::Info => BLUE,
@@ -1175,17 +1442,21 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.pump(&ctx);
+        self.poll_update();
         if self.ports_checked.is_none_or(|t| t.elapsed() > Duration::from_secs(5)) && self.show_settings {
             self.refresh_ports();
         }
         // Keep the UI ticking for staleness detection and reconnect timers.
         ctx.request_repaint_after(Duration::from_millis(250));
 
-        egui::Panel::top("top").show_inside(ui, |ui| {
-            ui.add_space(6.0);
-            self.top_bar(ui, &ctx);
-            ui.add_space(6.0);
-        });
+        // Compact mode has no top bar; its settings button lives in the status strip.
+        if !self.cfg.compact {
+            egui::Panel::top("top").show_inside(ui, |ui| {
+                ui.add_space(6.0);
+                self.top_bar(ui, &ctx);
+                ui.add_space(6.0);
+            });
+        }
         if self.show_log {
             egui::Panel::bottom("log").resizable(true).default_size(120.0).show_inside(ui, |ui| {
                 egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
@@ -1195,9 +1466,13 @@ impl eframe::App for App {
                 });
             });
         }
+        let mut fit_height = None;
         egui::CentralPanel::default().show_inside(ui, |ui| {
             if self.cfg.compact {
                 self.compact_view(ui);
+                // Content starts at the top margin; shrink the window to match, no dead space below.
+                let r = ui.min_rect();
+                fit_height = Some(r.bottom() + 4.0);
                 return;
             }
             egui::ScrollArea::vertical().show(ui, |ui| {
@@ -1213,6 +1488,15 @@ impl eframe::App for App {
                 });
             });
         });
+        if let Some(h) = fit_height.filter(|_| !self.show_log) {
+            let cur = ctx.input(|i| i.viewport().inner_rect.map(|r| r.size()));
+            if let Some(cur) = cur {
+                if (cur.y - h).abs() > 1.5 {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(egui::vec2(420.0, h)));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(cur.x, h)));
+                }
+            }
+        }
         self.settings_window(&ctx);
         self.fault_window(&ctx);
         self.amp_settings_window(&ctx);
