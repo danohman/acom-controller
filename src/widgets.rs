@@ -49,7 +49,23 @@ impl Meter<'_> {
             Pos2::new(rect.right(), rect.bottom() - 2.0),
         );
         let frac = |v: f32| ((v - self.min) / (self.max - self.min)).clamp(0.0, 1.0);
-        let f = frac(self.value);
+        // Rises are instant; falls decay smoothly (about a quarter second to settle).
+        let id = ui.id().with(("meter", self.label));
+        let target = frac(self.value);
+        let shown = ui.ctx().data(|d| d.get_temp::<f32>(id)).unwrap_or(target);
+        let f = if target >= shown {
+            target
+        } else {
+            let dt = ui.input(|i| i.stable_dt).min(0.1);
+            let next = target + (shown - target) * (-dt / 0.06).exp();
+            if (next - target).abs() > 0.002 {
+                ui.ctx().request_repaint();
+                next
+            } else {
+                target
+            }
+        };
+        ui.ctx().data_mut(|d| d.insert_temp(id, f));
         let x_at = |fr: f32| bar.left() + fr * bar.width();
         if self.zones.warn.is_infinite() {
             p.rect_filled(bar, r, track);
