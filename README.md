@@ -37,7 +37,7 @@ Captured in demo mode with the simulated amplifier transmitting.
    then in *Settings ▸ Connection* choose *Serial port*, pick the COM port and press *Apply connection*.
    The link is 9600 baud, 8N1; the amplifier is polled automatically.
 4. **Optional extras** (all in *Settings*):
-   - *Power & sharing* – remote power-on button (pulses DTR/RTS), and sharing the amplifier over TCP so
+   - *Power & sharing* – remote power-on button (pulses DTR/RTS), and [network sharing](#network-sharing-remote-operation) so
      another PC can use *Remote* mode.
    - *Radio* – follow your transceiver's frequency from N1MM+ (UDP), rigctld, or a shared-memory logger
      and switch the amplifier band automatically.
@@ -62,6 +62,35 @@ Always try a new setup into a dummy load first.
 - **Update check** – a *Check for new version* button in *Settings ▸ About*, and an automatic check
   against GitHub Releases at startup (can be switched off).
 - **About page** with version, copyright and license.
+
+## Network sharing (remote operation)
+
+One PC owns the amplifier's serial port and shares it over TCP; other PCs (or other copies of this
+program) connect to it, so you can run the amplifier from another room or another machine.
+
+**On the PC wired to the amplifier**
+
+1. Connect to the amplifier over the serial port as usual.
+2. *Settings ▸ Power & sharing ▸ Share this amplifier over the network*, and choose a TCP port
+   (default 7878). The setting takes effect on the next connect (press *Apply connection*).
+3. Allow that port through the Windows firewall (and forward it on your router if you want access from
+   outside your LAN – better, use a VPN).
+
+While sharing, the header shows how many remote clients are connected.
+
+**On the other PC**
+
+1. *Settings ▸ Connection ▸ Remote*, enter the host name or IP address and the port, then
+   *Apply connection*.
+2. The remote copy shows the same telemetry and has the same controls. Several clients can connect at once.
+
+Notes:
+
+- The shared link is the amplifier's raw serial byte stream. The owning PC keeps polling and acknowledging the
+  amplifier, and clients' commands are forwarded to it.
+- There is **no authentication or encryption**. The port listens on all network interfaces, so use it only on
+  a trusted network or through a VPN, and never expose it directly to the internet.
+- Remote power-on is a serial control line, so it is only available on the PC that owns the serial port.
 
 ## Features
 
