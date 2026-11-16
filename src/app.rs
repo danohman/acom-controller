@@ -98,6 +98,8 @@ pub struct App {
     update: UpdateStatus,
     update_rx: Option<std::sync::mpsc::Receiver<UpdateStatus>>,
     update_silent: bool,
+    install_rx: Option<std::sync::mpsc::Receiver<Result<std::path::PathBuf, String>>>,
+    update_error: Option<String>,
     show_log: bool,
     pending: Option<Pending>,
     comm_log: VecDeque<String>,
@@ -127,6 +129,7 @@ pub struct App {
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        crate::update::cleanup_old();
         let cfg = Config::load();
         crate::theme::apply(&cc.egui_ctx, cfg.dark_mode, cfg.ui_scale);
         let mut app = Self {
@@ -148,6 +151,8 @@ impl App {
             update: UpdateStatus::Idle,
             update_rx: None,
             update_silent: false,
+            install_rx: None,
+            update_error: None,
             show_log: false,
             pending: None,
             comm_log: VecDeque::new(),
@@ -229,7 +234,89 @@ impl App {
         self.update_rx = Some(crate::update::spawn_check(ctx.clone()));
     }
 
+    /// Persistent "new version available" notice with an Upgrade button, centred in `row`
+    /// (preferably around `center_x`). Falls back to just the button when the row is narrow.
+    fn update_banner(&mut self, ui: &mut egui::Ui, row: egui::Rect, center_x: f32) {
+        let UpdateStatus::Available { version, url, asset } = self.update.clone() else { return };
+        let installing = self.install_rx.is_some();
+        let can_install = cfg!(windows) && asset.is_some();
+        let failed = self.update_error.is_some();
+        let msg = if failed { "Update failed".to_string() } else { format!("Version {version} available") };
+        let btn_txt = if installing {
+            "Downloading…"
+        } else if failed {
+            "Retry"
+        } else if can_install {
+            "Upgrade"
+        } else {
+            "Download"
+        };
+        let measure = |ui: &egui::Ui, t: &str, size: f32| {
+            ui.painter().layout_no_wrap(t.to_owned(), egui::FontId::proportional(size), Color32::WHITE).size().x
+        };
+        let btn_w = measure(ui, btn_txt, 13.0) + 22.0 + if installing { 22.0 } else { 0.0 };
+        let full = measure(ui, &msg, 12.5) + 8.0 + btn_w;
+        let show_msg = full <= row.width();
+        let w = if show_msg { full } else { btn_w };
+        let left = (center_x - w / 2.0).clamp(row.left(), (row.right() - w).max(row.left()));
+        let rect = egui::Rect::from_min_size(egui::pos2(left, row.top()), egui::vec2(w, row.height()));
+        let mut child = ui.new_child(
+            egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        child.spacing_mut().item_spacing.x = 8.0;
+        if show_msg {
+            let col = if failed { RED } else { child.visuals().strong_text_color() };
+            let l = child.label(RichText::new(&msg).size(12.5).strong().color(col));
+            if let Some(e) = &self.update_error {
+                l.on_hover_text(e.as_str());
+            }
+        }
+        if installing {
+            child.add(egui::Spinner::new().size(14.0));
+            child.label(RichText::new("Downloading…").size(12.5));
+        } else {
+            // Blue with white text: readable on both the light and dark themes.
+            let btn = egui::Button::new(RichText::new(btn_txt).strong().size(13.0).color(Color32::WHITE))
+                .fill(Color32::from_rgb(37, 99, 235));
+            let tip = if can_install { "Download the new version and restart" } else { "Open the release page" };
+            if child.add(btn).on_hover_text(tip).clicked() {
+                if can_install {
+                    self.start_install(ui.ctx());
+                } else {
+                    ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+                }
+            }
+        }
+    }
+
+    fn start_install(&mut self, ctx: &egui::Context) {
+        let UpdateStatus::Available { asset: Some(asset), .. } = &self.update else { return };
+        let asset = asset.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let c = ctx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(crate::update::install(&asset));
+            c.request_repaint();
+        });
+        self.install_rx = Some(rx);
+        self.update_error = None;
+    }
+
     fn poll_update(&mut self) {
+        if let Some(rx) = &self.install_rx {
+            if let Ok(res) = rx.try_recv() {
+                self.install_rx = None;
+                match res {
+                    Ok(exe) => {
+                        // New version is in place: save settings, start it and quit this copy.
+                        self.cfg.save();
+                        let _ = std::process::Command::new(&exe).spawn();
+                        std::process::exit(0);
+                    }
+                    Err(e) => self.update_error = Some(e),
+                }
+            }
+        }
         let Some(rx) = &self.update_rx else { return };
         if let Ok(st) = rx.try_recv() {
             self.update_rx = None;
@@ -416,6 +503,8 @@ impl App {
     // ---------------------------------------------------------------- UI
 
     fn top_bar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let row_top = ui.cursor().top();
+        let (mut left_end, mut right_start) = (0.0_f32, f32::MAX);
         ui.horizontal(|ui| {
             if !self.cfg.compact {
                 ui.add(egui::Image::new(&self.logo).fit_to_exact_size(egui::vec2(28.0, 28.0)));
@@ -449,6 +538,7 @@ impl App {
             if self.clients > 0 {
                 widgets::chip(ui, &format!("{} remote client(s)", self.clients), BLUE);
             }
+            left_end = ui.cursor().left();
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("⚙ Settings").clicked() {
                     self.show_settings = true;
@@ -473,8 +563,14 @@ impl App {
                         self.send_power_pulse(ctx);
                     }
                 }
+                right_start = ui.min_rect().left();
             });
         });
+        if !self.cfg.compact {
+            let row = egui::Rect::from_min_max(egui::pos2(left_end + 12.0, row_top + 2.0), egui::pos2(right_start - 12.0, row_top + 26.0));
+            let center_x = ui.max_rect().center().x;
+            self.update_banner(ui, row, center_x);
+        }
         if let LinkStatus::Failed(why) = &self.status {
             ui.label(RichText::new(format!("⚠ {why}")).color(RED).size(12.5));
         }
@@ -921,6 +1017,12 @@ impl App {
     fn compact_view(&mut self, ui: &mut egui::Ui) {
         let connected = self.link.is_some() && self.amp.alive();
         let Some(t) = self.amp.telemetry.clone().filter(|_| self.amp.alive()) else {
+            {
+                let full = ui.max_rect();
+                let top = ui.cursor().top();
+                let row = egui::Rect::from_min_max(egui::pos2(full.left() + 10.0, top), egui::pos2(full.right() - 10.0, top + 22.0));
+                self.update_banner(ui, row, full.center().x);
+            }
             ui.add_space(12.0);
             ui.vertical_centered(|ui| {
                 ui.spinner();
@@ -944,8 +1046,14 @@ impl App {
         let temp_c = t.temp1_c();
         ui.spacing_mut().item_spacing = egui::vec2(6.0, 3.0);
 
+        let meter_top = ui.cursor().top();
         Meter { label: "FORWARD POWER", value: t.forward_w, min: 0.0, max: fs, text: format!("{:.0} W", t.forward_w),
             zones: Zones { warn: self.amp.model().rated_w() * 0.80, crit: self.amp.model().rated_w() }, peak, height: 34.0 }.show(ui);
+        {
+            let full = ui.max_rect();
+            let row = egui::Rect::from_min_max(egui::pos2(full.left() + 120.0, meter_top - 1.0), egui::pos2(full.right() - 80.0, meter_top + 19.0));
+            self.update_banner(ui, row, full.center().x);
+        }
         ui.columns(2, |cols| {
             Meter { label: "PA TEMPERATURE", value: temp_c, min: 20.0, max: 100.0, text: self.fmt_temp(temp_c),
                 zones: Zones { warn: 70.0, crit: 85.0 }, peak: None, height: 34.0 }.show(&mut cols[0]);
@@ -1359,6 +1467,12 @@ impl App {
                     });
                     if let UpdateStatus::Available { url, .. } = &self.update {
                         ui.hyperlink_to("Open the release page", url.as_str());
+                    }
+                    let can_upgrade = cfg!(windows)
+                        && self.install_rx.is_none()
+                        && matches!(&self.update, UpdateStatus::Available { asset: Some(_), .. });
+                    if can_upgrade && ui.button("Upgrade now").on_hover_text("Download the new version and restart").clicked() {
+                        self.start_install(ui.ctx());
                     }
                     f.changed |= ui.checkbox(&mut self.cfg.check_updates, "Check for a new version when the program starts").changed();
                     ui.label(

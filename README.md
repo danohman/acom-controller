@@ -28,9 +28,14 @@ Captured in demo mode with the simulated amplifier transmitting.
 
 ## Getting started
 
-1. **Get the program.** Download `acom-controller.exe` from the
-   [Releases](https://github.com/danohman/acom-controller/releases) page (no installer, no runtime needed),
-   or [build it yourself](#build).
+1. **Get the program.** Download it from the
+   [Releases](https://github.com/danohman/acom-controller/releases) page (no installer needed), or
+   [build it yourself](#build):
+   - **Windows** – `acom-controller.exe` (or the `windows-x64` zip).
+   - **Linux** (x86-64) and **macOS** (Apple Silicon `macos-arm64`, Intel `macos-x64`) – the `.tar.gz` archives.
+     These builds are experimental: the program is developed and tested on Windows, and the tray icon and
+     shared-memory radio source are Windows/macOS-only or Windows-only. On macOS you may need to allow the
+     unsigned app in *System Settings ▸ Privacy & Security*.
 2. **Try it without hardware.** Run the exe and choose *Settings ▸ Connection ▸ Demo*. A simulated amplifier
    appears; on the full layout the *Demo transmitter* card lets you key it and set the drive power.
 3. **Connect your amplifier.** Connect the amplifier's RS-232 port to your PC (a USB serial adapter works),

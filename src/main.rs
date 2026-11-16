@@ -19,7 +19,7 @@ fn main() -> eframe::Result {
     let (size, min) = app::layout_sizes(config::Config::load().compact);
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
-            .with_title("ACOM Controller")
+            .with_title(concat!("ACOM Controller ", env!("CARGO_PKG_VERSION")))
             .with_app_id("acom-controller")
             .with_icon(icon::window_icon())
             .with_inner_size(size)

@@ -1,6 +1,7 @@
 name: Release
 
-# Pushing a version tag (for example v1.0.1) builds the Windows exe and publishes a GitHub release.
+# Pushing a version tag (for example v1.0.1) builds Windows, Linux and macOS (Apple Silicon and Intel)
+# binaries and publishes them in one GitHub release.
 on:
   push:
     tags: ["v*"]
@@ -9,51 +10,111 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    runs-on: windows-latest
-    env:
-      # Static C runtime so the exe is one self-contained file.
-      RUSTFLAGS: -C target-feature=+crt-static
+  check-version:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - name: Check the tag matches Cargo.toml
-        shell: pwsh
         run: |
-          $tag = "${{ github.ref_name }}".TrimStart('v')
-          $line = Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"(.+)"' | Select-Object -First 1
-          $ver = $line.Matches[0].Groups[1].Value
-          if ($tag -ne $ver) {
-            Write-Error "Tag v$tag does not match Cargo.toml version $ver"
+          tag="${GITHUB_REF_NAME#v}"
+          ver=$(grep -m1 '^version' Cargo.toml | sed -E 's/^version *= *"(.*)"/\1/')
+          if [ "$tag" != "$ver" ]; then
+            echo "::error::Tag v$tag does not match Cargo.toml version $ver"
             exit 1
-          }
+          fi
 
+  build:
+    needs: check-version
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - name: windows-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            test: true
+          - name: linux-x64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            test: true
+          - name: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            test: true
+          # Built on the Apple Silicon runner; the Intel binary cannot be run there, so no tests.
+          - name: macos-x64
+            os: macos-latest
+            target: x86_64-apple-darwin
+            test: false
+    runs-on: ${{ matrix.os }}
+    env:
+      # Static C runtime on Windows so the exe is one self-contained file.
+      RUSTFLAGS: ${{ matrix.os == 'windows-latest' && '-C target-feature=+crt-static' || '' }}
+    steps:
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Linux system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev libasound2-dev libxkbcommon-dev libwayland-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libgl1-mesa-dev
 
       - name: Test
-        run: cargo test --release --locked
+        if: matrix.test
+        run: cargo test --release --locked --target ${{ matrix.target }}
 
       - name: Build
-        run: cargo build --release --locked
+        run: cargo build --release --locked --target ${{ matrix.target }}
 
-      - name: Package
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $name = "acom-controller-${{ github.ref_name }}-windows-x64"
+          $name = "acom-controller-${{ github.ref_name }}-${{ matrix.name }}"
           New-Item -ItemType Directory -Force dist/$name | Out-Null
-          Copy-Item target/release/acom-controller.exe dist/$name/
-          Copy-Item README.md dist/$name/
+          Copy-Item target/${{ matrix.target }}/release/acom-controller.exe dist/$name/
+          Copy-Item README.md, LICENSE dist/$name/
           Compress-Archive -Path dist/$name/* -DestinationPath dist/$name.zip
-          Copy-Item target/release/acom-controller.exe dist/acom-controller.exe
+          Copy-Item target/${{ matrix.target }}/release/acom-controller.exe dist/acom-controller.exe
+          Remove-Item -Recurse -Force dist/$name
 
-      - name: Publish release
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Package (Linux / macOS)
+        if: runner.os != 'Windows'
         run: |
-          $name = "acom-controller-${{ github.ref_name }}-windows-x64"
-          gh release create "${{ github.ref_name }}" `
-            "dist/acom-controller.exe" "dist/$name.zip" `
-            --title "ACOM Controller ${{ github.ref_name }}" `
+          name="acom-controller-${{ github.ref_name }}-${{ matrix.name }}"
+          mkdir -p "dist/$name"
+          cp "target/${{ matrix.target }}/release/acom-controller" README.md LICENSE "dist/$name/"
+          chmod +x "dist/$name/acom-controller"
+          tar -czf "dist/$name.tar.gz" -C dist "$name"
+          rm -rf "dist/$name"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: dist-*
+          merge-multiple: true
+      - name: Publish release
+        run: |
+          ls -l dist
+          gh release create "${{ github.ref_name }}" dist/* \
+            --title "ACOM Controller ${{ github.ref_name }}" \
             --generate-notes
