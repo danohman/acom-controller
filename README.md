@@ -57,4 +57,7 @@ with a dummy load first. The authors accept no responsibility for equipment dama
 - [x] Remote (TCP) mode – untested
 - [x] Remote power on/off verified on ACOM 1200S
 - [ ] Wider hardware validation (other models, ATU/ASEL, units and severity assumptions)
-- [ ] Tray icon, exe icon, sound alerts, hard-fault viewer, settings editor
+- [x] Exe icon (embedded), tray icon (Windows/macOS; optional close-to-tray)
+- [x] Sound alerts (warnings/faults, high SWR, link lost/restored; synthesised tones)
+- [x] Hard-fault viewer (reads records from the amplifier; the 1200S answers only some requests, so loading can be partial)
+- [x] Amplifier settings editor (operation flags, buzzer volume, CAT interface, user text, antenna names)
