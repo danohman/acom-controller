@@ -26,6 +26,9 @@ enum LinkStatus {
     Failed(String),
 }
 
+const BMC_URL: &str = "https://buymeacoffee.com/wd4dan";
+const PAYPAL_URL: &str = "https://www.paypal.com/donate/?hosted_button_id=ZUP4M98EWMRD4";
+
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum SettingsTab {
     #[default]
@@ -103,6 +106,8 @@ pub struct App {
     settings_dirty: bool,
     last_info_req: Option<Instant>,
     logo: egui::TextureHandle,
+    bmc_logo: egui::TextureHandle,
+    paypal_logo: egui::TextureHandle,
     sound: crate::sound::Sound,
     tray: Option<crate::tray::Tray>,
     // alert edge detection
@@ -151,6 +156,8 @@ impl App {
             settings_dirty: false,
             last_info_req: None,
             logo: crate::icon::texture(&cc.egui_ctx),
+            bmc_logo: crate::icon::image_texture(&cc.egui_ctx, "bmc", include_bytes!("../assets/bmc-button.png")),
+            paypal_logo: crate::icon::image_texture(&cc.egui_ctx, "paypal", include_bytes!("../assets/paypal-logo.png")),
             sound: crate::sound::Sound::new(),
             tray: None,
             was_alive: false,
@@ -1292,6 +1299,39 @@ impl App {
                             ui.label("Remote controller for ACOM solid-state amplifiers.");
                         });
                     });
+                });
+                ui.add_space(8.0);
+                widgets::card(ui, "Donate", |ui| {
+                    ui.label("If you find this program useful, you can support its development:");
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        let hand = egui::CursorIcon::PointingHand;
+                        let r = ui
+                            .add(egui::Image::new(&self.bmc_logo).fit_to_exact_size(egui::vec2(145.0, 41.0)).sense(egui::Sense::click()))
+                            .on_hover_cursor(hand)
+                            .on_hover_text(BMC_URL);
+                        if r.clicked() {
+                            ui.ctx().open_url(egui::OpenUrl::new_tab(BMC_URL));
+                        }
+                        ui.add_space(8.0);
+                        // The PayPal mark is dark blue, so it sits on a white badge to stay readable on any theme.
+                        let r = egui::Frame::new()
+                            .fill(Color32::WHITE)
+                            .corner_radius(egui::CornerRadius::same(8))
+                            .inner_margin(4.0)
+                            .show(ui, |ui| {
+                                ui.add(egui::Image::new(&self.paypal_logo).fit_to_exact_size(egui::vec2(90.0, 41.0)).sense(egui::Sense::click()))
+                            })
+                            .inner
+                            .on_hover_cursor(hand)
+                            .on_hover_text(PAYPAL_URL);
+                        if r.clicked() {
+                            ui.ctx().open_url(egui::OpenUrl::new_tab(PAYPAL_URL));
+                        }
+                    });
+                    ui.add_space(4.0);
+                    ui.hyperlink_to("Buy me a coffee", BMC_URL);
+                    ui.hyperlink_to("Donate with PayPal", PAYPAL_URL);
                 });
                 ui.add_space(8.0);
                 widgets::card(ui, "Updates", |ui| {
