@@ -1,0 +1,59 @@
+name: Release
+
+# Pushing a version tag (for example v1.0.1) builds the Windows exe and publishes a GitHub release.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      # Static C runtime so the exe is one self-contained file.
+      RUSTFLAGS: -C target-feature=+crt-static
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag matches Cargo.toml
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}".TrimStart('v')
+          $line = Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"(.+)"' | Select-Object -First 1
+          $ver = $line.Matches[0].Groups[1].Value
+          if ($tag -ne $ver) {
+            Write-Error "Tag v$tag does not match Cargo.toml version $ver"
+            exit 1
+          }
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo test --release --locked
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $name = "acom-controller-${{ github.ref_name }}-windows-x64"
+          New-Item -ItemType Directory -Force dist/$name | Out-Null
+          Copy-Item target/release/acom-controller.exe dist/$name/
+          Copy-Item README.md dist/$name/
+          Compress-Archive -Path dist/$name/* -DestinationPath dist/$name.zip
+          Copy-Item target/release/acom-controller.exe dist/acom-controller.exe
+
+      - name: Publish release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $name = "acom-controller-${{ github.ref_name }}-windows-x64"
+          gh release create "${{ github.ref_name }}" `
+            "dist/acom-controller.exe" "dist/$name.zip" `
+            --title "ACOM Controller ${{ github.ref_name }}" `
+            --generate-notes
