@@ -68,6 +68,10 @@ pub struct Config {
     pub ui_scale: f32,
     /// Slim single-column layout.
     pub compact: bool,
+    /// Last outer window positions (points): compact main window, full main window, settings window.
+    pub pos_compact: Option<[f32; 2]>,
+    pub pos_full: Option<[f32; 2]>,
+    pub pos_settings: Option<[f32; 2]>,
 
     pub sound_enabled: bool,
     pub sound_volume: f32,
@@ -111,6 +115,9 @@ impl Default for Config {
             confirm_dangerous: true,
             ui_scale: 1.0,
             compact: false,
+            pos_compact: None,
+            pos_full: None,
+            pos_settings: None,
             sound_enabled: true,
             sound_volume: 0.5,
             sound_faults: true,

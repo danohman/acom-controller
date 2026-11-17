@@ -71,6 +71,7 @@ struct SettingsFlags {
     reconnect: bool,
     restart_radio: bool,
     relayout: bool,
+    moved: bool,
 }
 
 enum Pending {
@@ -124,6 +125,10 @@ pub struct App {
     hf_base: (u32, u32),
     show_amp_settings: bool,
     edit: Option<amp_windows::AmpEdit>,
+    /// Window-position memory: frames to ignore after a programmatic move, startup flag, last change.
+    pos_skip: u8,
+    pos_init: bool,
+    pos_changed: Option<Instant>,
 }
 
 impl App {
@@ -173,6 +178,9 @@ impl App {
             hf_last: None,
             hf_step: 0,
             hf_base: (0, 0),
+            pos_skip: 0,
+            pos_init: false,
+            pos_changed: None,
             show_amp_settings: false,
             edit: None,
         };
@@ -950,10 +958,47 @@ impl App {
     }
 
     /// Resize the window for the active layout.
-    fn apply_layout(&self, ctx: &egui::Context) {
+    fn apply_layout(&mut self, ctx: &egui::Context) {
         let (size, min) = layout_sizes(self.cfg.compact);
         ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(min.into()));
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size.into()));
+        let saved = if self.cfg.compact { self.cfg.pos_compact } else { self.cfg.pos_full };
+        keep_on_screen(ctx, egui::vec2(size[0], size[1]), saved.map(|p| egui::pos2(p[0], p[1])));
+        // Don't record the in-between positions while the window is being moved.
+        self.pos_skip = 6;
+        self.cfg.save();
+    }
+
+    /// Remember where the main window is, per layout; restore it on the first frame.
+    fn track_main_pos(&mut self, ctx: &egui::Context) {
+        if !self.pos_init {
+            self.pos_init = true;
+            let saved = if self.cfg.compact { self.cfg.pos_compact } else { self.cfg.pos_full };
+            if let Some(p) = saved {
+                let size = ctx.input(|i| i.viewport().inner_rect.map(|r| r.size())).unwrap_or(egui::vec2(480.0, 174.0));
+                keep_on_screen(ctx, size, Some(egui::pos2(p[0], p[1])));
+                self.pos_skip = 6;
+            }
+            return;
+        }
+        if self.pos_skip > 0 {
+            self.pos_skip -= 1;
+            return;
+        }
+        let Some(r) = ctx.input(|i| i.viewport().outer_rect) else { return };
+        if r.min.x < -10000.0 || r.min.y < -10000.0 || ctx.input(|i| i.viewport().minimized == Some(true)) {
+            return; // minimized / hidden windows report bogus positions
+        }
+        let cur = [r.min.x, r.min.y];
+        let slot = if self.cfg.compact { &mut self.cfg.pos_compact } else { &mut self.cfg.pos_full };
+        if *slot != Some(cur) {
+            *slot = Some(cur);
+            self.pos_changed = Some(Instant::now());
+        }
+        if self.pos_changed.is_some_and(|t| t.elapsed() > Duration::from_secs(2)) {
+            self.pos_changed = None;
+            self.cfg.save();
+        }
     }
 
     /// Slim layout: everything an operator glances at, in one narrow column.
@@ -1077,9 +1122,20 @@ impl App {
             .with_icon(crate::icon::window_icon())
             .with_inner_size([760.0, 580.0])
             .with_min_inner_size([620.0, 420.0]);
+        let builder = match self.cfg.pos_settings {
+            Some(p) => builder.with_position(clamp_to_monitor(egui::pos2(p[0], p[1]), egui::vec2(760.0, 580.0), ctx.pixels_per_point())),
+            None => centered_on_main(ctx, builder, [760.0, 580.0]),
+        };
         ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("settings_viewport"), builder, |ui, _class| {
             if ui.ctx().input(|i| i.viewport().close_requested()) {
                 open = false;
+            }
+            if let Some(r) = ui.ctx().input(|i| i.viewport().outer_rect) {
+                let cur = [r.min.x, r.min.y];
+                if r.min.x > -10000.0 && self.cfg.pos_settings != Some(cur) {
+                    self.cfg.pos_settings = Some(cur);
+                    f.moved = true; // persisted when the window closes
+                }
             }
             egui::Panel::left("settings_nav").resizable(false).exact_size(160.0).show_inside(ui, |ui| {
                 ui.add_space(8.0);
@@ -1108,6 +1164,9 @@ impl App {
             }
         });
         self.show_settings = open;
+        if f.moved {
+            self.settings_dirty = true;
+        }
         if f.changed {
             self.settings_dirty = true;
             self.sync_tray(ctx);
@@ -1505,6 +1564,58 @@ impl App {
 
 /// Elapsed seconds as years, months, days, hours and minutes (365-day years, 30-day months),
 /// leaving out leading zero units, e.g. "11 months 20 days 4 hours 14 mins".
+/// Clamp a window of `size` points at `pos` (points) into the work area of the monitor it is on.
+/// Windows only; elsewhere the position is returned unchanged.
+fn clamp_to_monitor(pos: egui::Pos2, size: egui::Vec2, ppp: f32) -> egui::Pos2 {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST};
+        let (w, h) = (size.x * ppp, size.y * ppp);
+        let (x, y) = (pos.x * ppp, pos.y * ppp);
+        // SAFETY: plain Win32 calls with a zero-initialised, correctly sized MONITORINFO.
+        let work = unsafe {
+            let mon = MonitorFromPoint(windows_sys::Win32::Foundation::POINT { x: x as i32, y: y as i32 }, MONITOR_DEFAULTTONEAREST);
+            let mut mi: MONITORINFO = std::mem::zeroed();
+            mi.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+            if GetMonitorInfoW(mon, &mut mi) == 0 {
+                return pos;
+            }
+            mi.rcWork
+        };
+        let nx = x.min(work.right as f32 - w).max(work.left as f32);
+        let ny = y.min(work.bottom as f32 - h).max(work.top as f32);
+        egui::pos2(nx / ppp, ny / ppp)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (size, ppp);
+        pos
+    }
+}
+
+/// After a resize to `inner` points, move the window to `target` (or keep it where it is) and make
+/// sure it lies inside the monitor's work area.
+fn keep_on_screen(ctx: &egui::Context, inner: egui::Vec2, target: Option<egui::Pos2>) {
+    let Some((outer, inner_now)) = ctx.input(|i| Some((i.viewport().outer_rect?, i.viewport().inner_rect?))) else { return };
+    let size = inner + (outer.size() - inner_now.size());
+    let start = target.unwrap_or(outer.min);
+    let pos = clamp_to_monitor(start, size, ctx.pixels_per_point());
+    if target.is_some() || (pos - outer.min).length() >= 1.0 {
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
+    }
+}
+
+/// Place a child window centred over the main window so it opens on the same monitor.
+fn centered_on_main(ctx: &egui::Context, builder: egui::ViewportBuilder, size: [f32; 2]) -> egui::ViewportBuilder {
+    match ctx.input(|i| i.viewport().outer_rect) {
+        Some(r) => {
+            let c = r.center();
+            builder.with_position(egui::pos2(c.x - size[0] / 2.0, c.y - size[1] / 2.0))
+        }
+        None => builder,
+    }
+}
+
 fn fmt_online(secs: u64) -> String {
     let mins = secs / 60;
     let (years, rest) = (mins / (365 * 1440), mins % (365 * 1440));
@@ -1532,6 +1643,7 @@ fn sev_color(s: Severity) -> Color32 {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        self.track_main_pos(&ctx);
         self.pump(&ctx);
         self.poll_update();
         if self.ports_checked.is_none_or(|t| t.elapsed() > Duration::from_secs(5)) && self.show_settings {
@@ -1585,6 +1697,7 @@ impl eframe::App for App {
                 if (cur.y - h).abs() > 1.5 {
                     ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(egui::vec2(420.0, h)));
                     ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(cur.x, h)));
+                    keep_on_screen(&ctx, egui::vec2(cur.x, h), None);
                 }
             }
         }

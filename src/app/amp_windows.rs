@@ -216,6 +216,7 @@ impl App {
             .with_icon(crate::icon::window_icon())
             .with_inner_size([700.0, 500.0])
             .with_min_inner_size([580.0, 380.0]);
+        let builder = super::centered_on_main(ctx, builder, [700.0, 500.0]);
         ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("amp_settings_viewport"), builder, |ui, _class| {
             if ui.ctx().input(|i| i.viewport().close_requested() || i.key_pressed(egui::Key::Escape)) {
                 open = false;
