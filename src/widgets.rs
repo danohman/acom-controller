@@ -26,7 +26,8 @@ pub struct Meter<'a> {
     pub max: f32,
     pub text: String,
     pub zones: Zones,
-    pub peak: Option<f32>,
+    /// Peak-hold time; `None` disables peak hold. The white peak marker stays until the hold expires.
+    pub peak: Option<std::time::Duration>,
     pub height: f32,
 }
 
@@ -37,7 +38,6 @@ impl Meter<'_> {
         let p = ui.painter_at(rect);
         let vis = ui.visuals();
         let track = vis.extreme_bg_color;
-        let fg = vis.text_color();
         let r = CornerRadius::same(5);
 
         // Label and value share one text row (vertically centred), with the bar below it.
@@ -103,13 +103,28 @@ impl Meter<'_> {
                 }
             }
         }
-        if let Some(pk) = self.peak {
-            let x = bar.left() + frac(pk) * bar.width();
-            p.rect_filled(
-                Rect::from_min_max(Pos2::new(x - 1.0, bar.top() - 1.0), Pos2::new(x + 1.0, bar.bottom() + 1.0)),
-                CornerRadius::ZERO,
-                fg,
-            );
+        if let Some(hold) = self.peak {
+            // Track the peak per meter: a new high (or an expired hold) resets it to now.
+            let pid = id.with("peak");
+            let now = ui.input(|i| i.time);
+            let (pk, at) = match ui.ctx().data(|d| d.get_temp::<(f32, f64)>(pid)) {
+                Some(p) if self.value < p.0 && now - p.1 <= hold.as_secs_f64() => p,
+                _ => (self.value, now),
+            };
+            ui.ctx().data_mut(|d| d.insert_temp(pid, (pk, at)));
+            if self.value < pk {
+                ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64((hold.as_secs_f64() - (now - at)).max(0.0) + 0.02));
+            }
+            // No marker while the peak is all the way down at the left end of the bar.
+            if frac(pk) > 0.0 {
+                let x = x_at(frac(pk));
+                p.rect_filled(
+                    Rect::from_min_max(Pos2::new(x - 1.0, bar.top() - 1.0), Pos2::new(x + 1.0, bar.bottom() + 1.0)),
+                    CornerRadius::ZERO,
+                    // White on dark themes; black on light, where the track is white.
+                    if vis.dark_mode { Color32::WHITE } else { Color32::BLACK },
+                );
+            }
         }
         resp
     }

@@ -612,7 +612,8 @@ impl App {
             return;
         };
         let fs = model.full_scale_w();
-        let peak = self.cfg.peak_hold.then_some(self.amp.peak_forward_w);
+        let pk_on = self.cfg.peak_hold;
+        let h = move |secs: f32| pk_on.then(|| std::time::Duration::from_secs_f32(secs));
         widgets::card(ui, "RF power", |ui| {
             ui.horizontal(|ui| {
                 widgets::readout(ui, "FORWARD", &format!("{:.0} W", t.forward_w), ui.visuals().strong_text_color());
@@ -632,7 +633,7 @@ impl App {
                 max: fs,
                 text: format!("{:.0} W", t.forward_w),
                 zones: Zones { warn: model.rated_w() * 0.80, crit: model.rated_w() },
-                peak,
+                peak: h(2.5),
                 height: 40.0,
             }
             .show(ui);
@@ -643,7 +644,7 @@ impl App {
                 max: fs * 0.2,
                 text: format!("{:.0} W", t.reflected_w),
                 zones: Zones { warn: fs * 0.03, crit: fs * 0.08 },
-                peak: None,
+                peak: h(2.5),
                 height: 40.0,
             }
             .show(ui);
@@ -654,7 +655,7 @@ impl App {
                 max: 4.0,
                 text: format!("{:.2}", t.swr.max(1.0)),
                 zones: Zones { warn: self.cfg.swr_alert, crit: 3.0 },
-                peak: None,
+                peak: h(2.5),
                 height: 40.0,
             }
             .show(ui);
@@ -665,7 +666,7 @@ impl App {
                 max: 100.0,
                 text: format!("{:.1} W", t.input_w),
                 zones: Zones { warn: 70.0, crit: 90.0 },
-                peak: None,
+                peak: h(2.5),
                 height: 40.0,
             }
             .show(ui);
@@ -680,7 +681,7 @@ impl App {
                 max: 100.0,
                 text: self.fmt_temp(temp),
                 zones: Zones { warn: 60.0, crit: 80.0 },
-                peak: None,
+                peak: h(60.0),
                 height: 40.0,
             }
             .show(ui);
@@ -691,7 +692,7 @@ impl App {
                 max: 60.0,
                 text: format!("{:.1} A", t.id1_a),
                 zones: Zones { warn: 45.0, crit: 55.0 },
-                peak: None,
+                peak: h(2.5),
                 height: 40.0,
             }
             .show(ui);
@@ -702,7 +703,7 @@ impl App {
                 max: 60.0,
                 text: format!("{:.1} V", t.hv1_v),
                 zones: Zones::NONE,
-                peak: None,
+                peak: h(2.5),
                 height: 40.0,
             }
             .show(ui);
@@ -1030,7 +1031,8 @@ impl App {
         };
         let fs = self.amp.model().full_scale_w();
         let band = self.amp.current_band().and_then(band_by_number);
-        let peak = self.cfg.peak_hold.then_some(self.amp.peak_forward_w);
+        let pk_on = self.cfg.peak_hold;
+        let h = move |secs: f32| pk_on.then(|| std::time::Duration::from_secs_f32(secs));
         let temp_c = t.temp1_c();
         ui.spacing_mut().item_spacing = egui::vec2(6.0, 3.0);
 
@@ -1042,19 +1044,19 @@ impl App {
         let mut slot_meter = |ui: &mut egui::Ui, slot: usize| {
             let m = match kinds[slot] {
                 CompactGraph::Forward => Meter { label: "FORWARD POWER", value: t.forward_w, min: 0.0, max: fs, text: format!("{:.0} W", t.forward_w),
-                    zones: Zones { warn: rated * 0.80, crit: rated }, peak, height: 34.0 },
+                    zones: Zones { warn: rated * 0.80, crit: rated }, peak: h(2.5), height: 34.0 },
                 CompactGraph::Reflected => Meter { label: "REFLECTED POWER", value: t.reflected_w, min: 0.0, max: fs * 0.2, text: format!("{:.0} W", t.reflected_w),
-                    zones: Zones { warn: fs * 0.03, crit: fs * 0.08 }, peak: None, height: 34.0 },
+                    zones: Zones { warn: fs * 0.03, crit: fs * 0.08 }, peak: h(2.5), height: 34.0 },
                 CompactGraph::Swr => Meter { label: "SWR", value: t.swr.max(1.0), min: 1.0, max: 4.0, text: format!("{:.2}", t.swr.max(1.0)),
-                    zones: Zones { warn: swr_alert, crit: 3.0 }, peak: None, height: 34.0 },
+                    zones: Zones { warn: swr_alert, crit: 3.0 }, peak: h(2.5), height: 34.0 },
                 CompactGraph::Temp => Meter { label: "PA TEMPERATURE", value: temp_c, min: 20.0, max: 100.0, text: temp_txt.clone(),
-                    zones: Zones { warn: 70.0, crit: 85.0 }, peak: None, height: 34.0 },
+                    zones: Zones { warn: 70.0, crit: 85.0 }, peak: h(60.0), height: 34.0 },
                 CompactGraph::Drive => Meter { label: "DRIVE POWER", value: t.input_w, min: 0.0, max: 100.0, text: format!("{:.1} W", t.input_w),
-                    zones: Zones { warn: 70.0, crit: 90.0 }, peak: None, height: 34.0 },
+                    zones: Zones { warn: 70.0, crit: 90.0 }, peak: h(2.5), height: 34.0 },
                 CompactGraph::DrainCurrent => Meter { label: "PA DRAIN CURRENT", value: t.id1_a, min: 0.0, max: 60.0, text: format!("{:.1} A", t.id1_a),
-                    zones: Zones { warn: 45.0, crit: 55.0 }, peak: None, height: 34.0 },
+                    zones: Zones { warn: 45.0, crit: 55.0 }, peak: h(2.5), height: 34.0 },
                 CompactGraph::HvVoltage => Meter { label: "PA VOLTAGE (HV)", value: t.hv1_v, min: 0.0, max: 60.0, text: format!("{:.1} V", t.hv1_v),
-                    zones: Zones::NONE, peak: None, height: 34.0 },
+                    zones: Zones::NONE, peak: h(2.5), height: 34.0 },
             };
             let resp = m.show(ui).on_hover_text("Right-click to change graph");
             if resp.secondary_clicked() {
@@ -1112,26 +1114,33 @@ impl App {
 
         // Status strip: mode, amplifier state, settings.
         let alarm = self.amp.active_codes.first().copied().or((t.alarm_code != 0).then_some(t.alarm_code));
+        // Deeper green in light mode so it reads against the strip background.
+        let strip_green = if ui.visuals().dark_mode { GREEN } else { Color32::from_rgb(0, 105, 40) };
         let (mode_txt, mode_col) = match t.mode {
             AmpMode::OperateTx => ("TX", RED),
-            AmpMode::OperateRx => ("RX", GREEN),
+            AmpMode::OperateRx => ("RX", strip_green),
             AmpMode::Standby => ("STANDBY", Color32::from_rgb(255, 140, 0)),
             m => (m.label(), AMBER),
         };
-        ui.horizontal(|ui| {
-            if t.mode == AmpMode::OperateTx {
-                widgets::tx_chip(ui, mode_txt);
-            } else {
-                widgets::chip(ui, mode_txt, mode_col);
-            }
-            match alarm.and_then(|c| errors::text(c).map(|x| (c, x))) {
-                Some((c, text)) => ui.label(RichText::new(format!("⚠ {text}")).color(sev_color(errors::severity(c))).size(12.5)),
-                None => ui.label(RichText::new("AMPLIFIER NORMAL").color(GREEN).strong().size(12.5)),
-            };
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if widgets::icon_button(ui, "⚙", "Settings").clicked() {
-                    self.show_settings = true;
+        // Distinct background so the strip reads as a status bar in both themes.
+        let strip_fill = if ui.visuals().dark_mode { Color32::from_rgb(33, 40, 54) } else { Color32::from_rgb(201, 210, 224) };
+        egui::Frame::new().fill(strip_fill).corner_radius(6.0).inner_margin(egui::Margin::symmetric(6, 4)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                if t.mode == AmpMode::OperateTx {
+                    widgets::tx_chip(ui, mode_txt);
+                } else {
+                    widgets::chip(ui, mode_txt, mode_col);
                 }
+                match alarm.and_then(|c| errors::text(c).map(|x| (c, x))) {
+                    Some((c, text)) => ui.label(RichText::new(format!("⚠ {text}")).color(sev_color(errors::severity(c))).size(12.5)),
+                    None => ui.label(RichText::new("AMPLIFIER NORMAL").color(strip_green).strong().size(12.5)),
+                };
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if widgets::icon_button(ui, "⚙", "Settings").clicked() {
+                        self.show_settings = true;
+                    }
+                });
             });
         });
     }
@@ -1438,7 +1447,7 @@ impl App {
                 ui.add_space(8.0);
                 widgets::card(ui, "Readouts", |ui| {
                     f.changed |= ui.checkbox(&mut self.cfg.fahrenheit, "Temperatures in °F").changed();
-                    f.changed |= ui.checkbox(&mut self.cfg.peak_hold, "Peak hold on power meter").changed();
+                    f.changed |= ui.checkbox(&mut self.cfg.peak_hold, "Peak hold on graphs").changed();
                 });
             }
             SettingsTab::Alerts => {

@@ -44,8 +44,6 @@ pub struct AmpState {
     pub history: VecDeque<Sample>,
     pub last_rx: Option<Instant>,
     pub frames_ok: u64,
-    pub peak_forward_w: f32,
-    pub peak_at: Option<Instant>,
     pub max_forward_w: f32,
     pub max_swr: f32,
     last_sample: Option<Instant>,
@@ -53,7 +51,6 @@ pub struct AmpState {
 }
 
 const HISTORY_SPAN: Duration = Duration::from_secs(300);
-const PEAK_HOLD: Duration = Duration::from_millis(1500);
 
 impl AmpState {
     pub fn model(&self) -> AmpModel {
@@ -154,10 +151,6 @@ impl AmpState {
 
     fn record(&mut self, t: &Telemetry) {
         let now = Instant::now();
-        if t.forward_w >= self.peak_forward_w || self.peak_at.is_none_or(|p| p.elapsed() > PEAK_HOLD) {
-            self.peak_forward_w = t.forward_w;
-            self.peak_at = Some(now);
-        }
         self.max_forward_w = self.max_forward_w.max(t.forward_w);
         if t.forward_w > 5.0 {
             self.max_swr = self.max_swr.max(t.swr);
