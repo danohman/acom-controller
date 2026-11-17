@@ -25,6 +25,36 @@ pub enum RadioSource {
     SharedMemory,
 }
 
+/// A bar graph that can be shown in one of the compact layout's five slots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CompactGraph {
+    Forward,
+    Reflected,
+    Swr,
+    Temp,
+    Drive,
+    DrainCurrent,
+    HvVoltage,
+}
+
+impl CompactGraph {
+    pub const ALL: [CompactGraph; 7] =
+        [Self::Forward, Self::Reflected, Self::Swr, Self::Drive, Self::Temp, Self::DrainCurrent, Self::HvVoltage];
+    pub const DEFAULT: [CompactGraph; 5] = [Self::Forward, Self::Reflected, Self::Swr, Self::Drive, Self::Temp];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Forward => "Forward power",
+            Self::Reflected => "Reflected power",
+            Self::Swr => "SWR",
+            Self::Temp => "PA temperature",
+            Self::Drive => "Drive power",
+            Self::DrainCurrent => "PA drain current",
+            Self::HvVoltage => "PA voltage (HV)",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum PowerPulse {
     #[default]
@@ -68,8 +98,8 @@ pub struct Config {
     pub ui_scale: f32,
     /// Slim single-column layout.
     pub compact: bool,
-    /// Compact layout: the right-hand meter shows SWR instead of reflected power (and the strip shows REF_PWR).
-    pub compact_show_swr: bool,
+    /// Compact layout bar graphs: a full-width bar, then two rows of two half-width bars.
+    pub compact_graph_slots: [CompactGraph; 5],
     /// Last outer window positions (points): compact main window, full main window, settings window.
     pub pos_compact: Option<[f32; 2]>,
     pub pos_full: Option<[f32; 2]>,
@@ -117,7 +147,7 @@ impl Default for Config {
             confirm_dangerous: true,
             ui_scale: 1.0,
             compact: false,
-            compact_show_swr: false,
+            compact_graph_slots: CompactGraph::DEFAULT,
             pos_compact: None,
             pos_full: None,
             pos_settings: None,

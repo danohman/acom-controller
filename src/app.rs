@@ -1,6 +1,6 @@
 //! Main application window.
 
-use crate::config::{Config, Connection, PowerPulse, RadioSource};
+use crate::config::{CompactGraph, Config, Connection, PowerPulse, RadioSource};
 use crate::link::{self, Cmd, Event, LinkHandle};
 use crate::protocol::bands::{BANDS, band_by_number, band_for_frequency};
 use crate::protocol::commands::{self, ModeRequest, Select};
@@ -129,6 +129,8 @@ pub struct App {
     pos_skip: u8,
     /// Where the settings window was opened; fixed while open so it is not re-placed every frame.
     settings_start: Option<egui::Pos2>,
+    /// Compact layout's "choose graph" popup: (slot, screen position, frames open, has had focus).
+    graph_menu: Option<(usize, egui::Pos2, u32, bool)>,
     pos_init: bool,
     pos_changed: Option<Instant>,
 }
@@ -182,6 +184,7 @@ impl App {
             hf_base: (0, 0),
             pos_skip: 0,
             settings_start: None,
+            graph_menu: None,
             pos_init: false,
             pos_changed: None,
             show_amp_settings: false,
@@ -978,7 +981,7 @@ impl App {
             self.pos_init = true;
             let saved = if self.cfg.compact { self.cfg.pos_compact } else { self.cfg.pos_full };
             if let Some(p) = saved {
-                let size = ctx.input(|i| i.viewport().inner_rect.map(|r| r.size())).unwrap_or(egui::vec2(480.0, 174.0));
+                let size = ctx.input(|i| i.viewport().inner_rect.map(|r| r.size())).unwrap_or(egui::vec2(480.0, 254.0));
                 keep_on_screen(ctx, size, Some(egui::pos2(p[0], p[1])));
                 self.pos_skip = 6;
             }
@@ -1008,6 +1011,7 @@ impl App {
     fn compact_view(&mut self, ui: &mut egui::Ui) {
         let connected = self.link.is_some() && self.amp.alive();
         let Some(t) = self.amp.telemetry.clone().filter(|_| self.amp.alive()) else {
+            self.graph_menu = None;
             {
                 let full = ui.max_rect();
                 let top = ui.cursor().top();
@@ -1035,34 +1039,48 @@ impl App {
         let temp_c = t.temp1_c();
         ui.spacing_mut().item_spacing = egui::vec2(6.0, 3.0);
 
-        let meter_top = ui.cursor().top();
-        Meter { label: "FORWARD POWER", value: t.forward_w, min: 0.0, max: fs, text: format!("{:.0} W", t.forward_w),
-            zones: Zones { warn: self.amp.model().rated_w() * 0.80, crit: self.amp.model().rated_w() }, peak, height: 34.0 }.show(ui);
-        {
-            let full = ui.max_rect();
-            let row = egui::Rect::from_min_max(egui::pos2(full.left() + 120.0, meter_top - 1.0), egui::pos2(full.right() - 80.0, meter_top + 19.0));
-            self.update_banner(ui, row, full.center().x);
-        }
-        let show_swr = self.cfg.compact_show_swr;
+        let kinds = self.cfg.compact_graph_slots;
+        let rated = self.amp.model().rated_w();
+        let temp_txt = self.fmt_temp(temp_c);
         let swr_alert = self.cfg.swr_alert;
-        let mut toggled = false;
-        ui.columns(2, |cols| {
-            Meter { label: "PA TEMPERATURE", value: temp_c, min: 20.0, max: 100.0, text: self.fmt_temp(temp_c),
-                zones: Zones { warn: 70.0, crit: 85.0 }, peak: None, height: 34.0 }.show(&mut cols[0]);
-            let resp = if show_swr {
-                Meter { label: "SWR", value: t.swr.max(1.0), min: 1.0, max: 4.0, text: format!("{:.2}", t.swr.max(1.0)),
-                    zones: Zones { warn: swr_alert, crit: 3.0 }, peak: None, height: 34.0 }.show(&mut cols[1])
-            } else {
-                Meter { label: "REFLECTED POWER", value: t.reflected_w, min: 0.0, max: fs * 0.2, text: format!("{:.0} W", t.reflected_w),
-                    zones: Zones { warn: fs * 0.03, crit: fs * 0.08 }, peak: None, height: 34.0 }.show(&mut cols[1])
+        let mut open_menu = None;
+        let mut slot_meter = |ui: &mut egui::Ui, slot: usize| {
+            let m = match kinds[slot] {
+                CompactGraph::Forward => Meter { label: "FORWARD POWER", value: t.forward_w, min: 0.0, max: fs, text: format!("{:.0} W", t.forward_w),
+                    zones: Zones { warn: rated * 0.80, crit: rated }, peak, height: 34.0 },
+                CompactGraph::Reflected => Meter { label: "REFLECTED POWER", value: t.reflected_w, min: 0.0, max: fs * 0.2, text: format!("{:.0} W", t.reflected_w),
+                    zones: Zones { warn: fs * 0.03, crit: fs * 0.08 }, peak: None, height: 34.0 },
+                CompactGraph::Swr => Meter { label: "SWR", value: t.swr.max(1.0), min: 1.0, max: 4.0, text: format!("{:.2}", t.swr.max(1.0)),
+                    zones: Zones { warn: swr_alert, crit: 3.0 }, peak: None, height: 34.0 },
+                CompactGraph::Temp => Meter { label: "PA TEMPERATURE", value: temp_c, min: 20.0, max: 100.0, text: temp_txt.clone(),
+                    zones: Zones { warn: 70.0, crit: 85.0 }, peak: None, height: 34.0 },
+                CompactGraph::Drive => Meter { label: "DRIVE POWER", value: t.input_w, min: 0.0, max: 100.0, text: format!("{:.1} W", t.input_w),
+                    zones: Zones { warn: 70.0, crit: 90.0 }, peak: None, height: 34.0 },
+                CompactGraph::DrainCurrent => Meter { label: "PA DRAIN CURRENT", value: t.id1_a, min: 0.0, max: 60.0, text: format!("{:.1} A", t.id1_a),
+                    zones: Zones { warn: 45.0, crit: 55.0 }, peak: None, height: 34.0 },
+                CompactGraph::HvVoltage => Meter { label: "PA VOLTAGE (HV)", value: t.hv1_v, min: 0.0, max: 60.0, text: format!("{:.1} V", t.hv1_v),
+                    zones: Zones::NONE, peak: None, height: 34.0 },
             };
-            let tip = if show_swr { "Click to show reflected power" } else { "Click to show SWR" };
-            if resp.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                toggled = true;
+            let resp = m.show(ui).on_hover_text("Right-click to change graph");
+            if resp.secondary_clicked() {
+                let origin = resp.ctx.input(|i| i.viewport().inner_rect).map(|r| r.min).unwrap_or(egui::Pos2::ZERO);
+                open_menu = Some((slot, origin + resp.interact_pointer_pos().unwrap_or(resp.rect.center()).to_vec2()));
             }
+        };
+        slot_meter(ui, 0);
+        ui.columns(2, |cols| {
+            slot_meter(&mut cols[0], 1);
+            slot_meter(&mut cols[1], 2);
         });
-        if toggled {
-            self.cfg.compact_show_swr = !self.cfg.compact_show_swr;
+        ui.columns(2, |cols| {
+            slot_meter(&mut cols[0], 3);
+            slot_meter(&mut cols[1], 4);
+        });
+        if let Some((slot, pos)) = open_menu {
+            self.graph_menu = Some((slot, pos, 0, false));
+        }
+        if let Some(chosen) = self.graph_menu_window(ui.ctx(), kinds) {
+            self.cfg.compact_graph_slots = chosen;
             self.cfg.save();
         }
 
@@ -1072,6 +1090,12 @@ impl App {
             (_, Some(b)) => (b.low_khz, b.high_khz),
             _ => (0, 0),
         };
+        {
+            let full = ui.max_rect();
+            let top = ui.cursor().top();
+            let row = egui::Rect::from_min_max(egui::pos2(full.left() + 190.0, top), egui::pos2(full.right() - 90.0, top + 22.0));
+            self.update_banner(ui, row, full.center().x);
+        }
         ui.add_enabled_ui(connected, |ui| {
             ui.horizontal(|ui| {
                 let name = band.map(|b| b.name).unwrap_or("–");
@@ -1091,7 +1115,7 @@ impl App {
             });
         });
 
-        // Status strip: mode, amplifier state, SWR, drive.
+        // Status strip: mode, amplifier state, settings.
         let alarm = self.amp.active_codes.first().copied().or((t.alarm_code != 0).then_some(t.alarm_code));
         let (mode_txt, mode_col) = match t.mode {
             AmpMode::OperateTx => ("TX", RED),
@@ -1099,8 +1123,6 @@ impl App {
             AmpMode::Standby => ("STANDBY", Color32::from_rgb(255, 140, 0)),
             m => (m.label(), AMBER),
         };
-        let swr = t.swr.max(1.0);
-        let swr_col = if swr >= 3.0 { RED } else if swr >= self.cfg.swr_alert { AMBER } else { GREEN };
         ui.horizontal(|ui| {
             if t.mode == AmpMode::OperateTx {
                 widgets::tx_chip(ui, mode_txt);
@@ -1115,19 +1137,58 @@ impl App {
                 if widgets::icon_button(ui, "⚙", "Settings").clicked() {
                     self.show_settings = true;
                 }
-                ui.add_space(6.0);
-                ui.label(RichText::new(format!("{:.1} W", t.input_w)).monospace().strong());
-                ui.label(RichText::new("DRIVE").size(11.5).color(MUTED));
-                ui.add_space(6.0);
-                if show_swr {
-                    ui.label(RichText::new(format!("{:.0} W", t.reflected_w)).monospace().strong());
-                    ui.label(RichText::new("REF_PWR").size(11.5).color(MUTED));
-                } else {
-                    ui.label(RichText::new(format!("{swr:.2}")).monospace().strong().color(swr_col));
-                    ui.label(RichText::new("SWR").size(11.5).color(MUTED));
+            });
+        });
+    }
+
+    /// Popup for choosing the graph in a compact slot. It is a borderless window of its own so it
+    /// can extend beyond the (small) main window. Returns the new slot assignment when one is picked.
+    fn graph_menu_window(&mut self, ctx: &egui::Context, kinds: [CompactGraph; 5]) -> Option<[CompactGraph; 5]> {
+        let (slot, pos, frames, seen_focus) = self.graph_menu?;
+        let size = egui::vec2(190.0, CompactGraph::ALL.len() as f32 * 26.0 + 14.0);
+        let start = clamp_to_monitor(pos, size, ctx.pixels_per_point());
+        let builder = egui::ViewportBuilder::default()
+            .with_title("Choose graph")
+            .with_decorations(false)
+            .with_resizable(false)
+            .with_always_on_top()
+            .with_taskbar(false)
+            .with_inner_size(size)
+            .with_position(start);
+        let mut chosen = None;
+        let mut close = false;
+        let mut focused_now = false;
+        ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("graph_menu_viewport"), builder, |ui, _class| {
+            focused_now = ui.ctx().input(|i| i.focused);
+            if ui.ctx().input(|i| i.viewport().close_requested() || i.key_pressed(egui::Key::Escape)) {
+                close = true;
+            }
+            egui::CentralPanel::default().show_inside(ui, |ui| {
+                for k in CompactGraph::ALL {
+                    let btn = egui::Button::new(k.label()).selected(kinds[slot] == k).min_size(egui::vec2(ui.available_width(), 22.0));
+                    if ui.add(btn).clicked() {
+                        let mut n = kinds;
+                        // Picking a graph already shown elsewhere swaps the two slots.
+                        if let Some(j) = kinds.iter().position(|&x| x == k) {
+                            n[j] = kinds[slot];
+                        }
+                        n[slot] = k;
+                        chosen = Some(n);
+                        close = true;
+                    }
                 }
             });
         });
+        let seen = seen_focus || focused_now;
+        // Dismiss on focus loss (or if it never got focus at all).
+        if !focused_now && (seen || frames > 30) {
+            close = true;
+        }
+        self.graph_menu = if close { None } else { Some((slot, pos, frames + 1, seen)) };
+        if !close {
+            ctx.request_repaint();
+        }
+        chosen
     }
 
     fn settings_window(&mut self, ctx: &egui::Context) {
@@ -1753,5 +1814,5 @@ impl eframe::App for App {
 
 /// Default (inner size, minimum inner size) for the full or compact layout.
 pub fn layout_sizes(compact: bool) -> ([f32; 2], [f32; 2]) {
-    if compact { ([480.0, 174.0], [420.0, 166.0]) } else { ([1330.0, 815.0], [820.0, 560.0]) }
+    if compact { ([480.0, 254.0], [420.0, 246.0]) } else { ([1330.0, 815.0], [820.0, 560.0]) }
 }

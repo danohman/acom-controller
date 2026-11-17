@@ -8,7 +8,7 @@ A modern, single-executable Windows controller for ACOM solid-state amplifiers
 It talks to the amplifier over its RS-232 interface using the protocol described in
 `doc/ACOM_RS_232_Serial_Protocol_Description_for_Solid-State_Amplifiers_GB_01_2026.pdf`.
 
-> Status: version 1.0.1. Runs in built-in demo mode and has been exercised on an ACOM 1200S (connect, telemetry, remote power on/off). Other models are untested. See [Roadmap](#roadmap).
+> Status: version 1.0.3. Runs in built-in demo mode and has been exercised on an ACOM 1200S (connect, telemetry, remote power on/off). Other models are untested. See [Roadmap](#roadmap).
 
 ## Screenshots
 
@@ -20,11 +20,21 @@ Captured in demo mode with the simulated amplifier transmitting.
 | --- | --- |
 | <img src="assets/screenshot-dark.png" alt="Full layout, dark theme"> | <img src="assets/screenshot-light.png" alt="Full layout, light theme"> |
 
-**Compact layout**
+**Compact layout** (five bar graphs, each one selectable)
 
 | Dark | Light |
 | --- | --- |
 | <img src="assets/screenshot-compact-dark.png" alt="Compact layout, dark theme"> | <img src="assets/screenshot-compact-light.png" alt="Compact layout, light theme"> |
+
+**Faults** (simulated)
+
+| Full layout: high SWR | Compact: high SWR |
+| --- | --- |
+| <img src="assets/screenshot-fault-swr.png" alt="Full layout showing a high SWR fault"> | <img src="assets/screenshot-compact-fault-swr.png" alt="Compact layout showing a high SWR fault"> |
+
+| Compact: PA temperature too high | Compact: excessive reflected power |
+| --- | --- |
+| <img src="assets/screenshot-compact-fault-temp.png" alt="Compact layout showing a PA temperature fault"> | <img src="assets/screenshot-compact-fault-refl.png" alt="Compact layout showing a reflected power fault"> |
 
 ## Getting started
 
@@ -46,35 +56,10 @@ Captured in demo mode with the simulated amplifier transmitting.
      another PC can use *Remote* mode.
    - *Radio* – follow your transceiver's frequency from N1MM+ (UDP), rigctld, or a shared-memory logger
      and switch the amplifier band automatically.
-   - *Display* – compact layout, dark/light theme, UI scale, temperature units, peak hold.
+   - *Display* – compact layout (right-click a bar to change what it shows), dark/light theme, UI scale, temperature units, peak hold.
    - *Alerts* – SWR threshold, power-off confirmation and sound alerts.
 
 Always try a new setup into a dummy load first.
-
-## What's new in 1.0.1
-
-- **Amplifier only.** Every ACOM solid-state amplifier has a single antenna output (the 500S has two, with no
-  software selection), and none has an internal tuner, so the controls for external antenna tuners and
-  selectors were removed: the antenna and segment buttons, the ATU card, the *ANT* button in the compact
-  layout and the *Antenna names* settings page. The band card is now just *Band*.
-- New screenshots.
-
-## What's new in 1.0.0
-
-- **Settings in their own window** with sections (Connection, Power & sharing, Radio, Display, Alerts,
-  System, About), so it is usable even from the slim compact window.
-- **Amplifier settings** got the same treatment (Operation, CAT interface, User text).
-- **Segmented green/amber/red meters** on every bar graph. The forward-power zones follow the connected
-  model's rated power (amber from 80 %, red at rated power).
-- **Compact layout** is slimmer: no top bar, the settings button sits in the status strip, and the window
-  fits its content.
-- **OPR/STB button** is green in operate and orange in standby; the status chip shows RX (green),
-  STB (orange) or TX (red). *Inhibit TX* turns red while TX is inhibited.
-- **Online time** is shown in years, months, days, hours and minutes.
-- **Light theme** uses black text.
-- **Update check** – a *Check for new version* button in *Settings ▸ About*, and an automatic check
-  against GitHub Releases at startup (can be switched off).
-- **About page** with version, copyright and license.
 
 ## Network sharing (remote operation)
 
