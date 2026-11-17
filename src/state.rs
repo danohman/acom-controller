@@ -36,11 +36,8 @@ pub struct AmpState {
     pub info: Option<SystemInfo>,
     pub settings: Option<Settings>,
     pub hello: [String; 2],
-    pub antenna_names: [String; 4],
     pub band: Option<BandInfo>,
     pub active_codes: Vec<u8>,
-    pub atu_serial: Option<String>,
-    pub atu_measure: Option<AtuMeasure>,
     pub alarm_log: Vec<AlarmEntry>,
     /// Hard fault records read back from the amplifier, keyed by EEPROM index.
     pub hard_faults: BTreeMap<u8, HardFaultEntry>,
@@ -112,7 +109,6 @@ impl AmpState {
             Message::SystemInfo(i) => self.info = Some(i),
             Message::Settings(s) => self.settings = Some(s),
             Message::Hello { part, text } => self.hello[part as usize & 1] = text,
-            Message::AntennaNames(n) => self.antenna_names = n,
             Message::BandInfo(b) => self.band = Some(b),
             Message::ErrorCodes(c) => {
                 for &code in &c {
@@ -132,8 +128,6 @@ impl AmpState {
                 let i = x.index;
                 self.hard_faults.entry(i).or_default().snapshot = Some(x);
             }
-            Message::AtuInfo { serial, .. } => self.atu_serial = Some(serial),
-            Message::AtuMeasure(m) => self.atu_measure = Some(m),
             _ => {}
         }
     }

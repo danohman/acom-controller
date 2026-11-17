@@ -3,9 +3,9 @@
 use crate::config::{Config, Connection, PowerPulse, RadioSource};
 use crate::link::{self, Cmd, Event, LinkHandle};
 use crate::protocol::bands::{BANDS, band_by_number, band_for_frequency};
-use crate::protocol::commands::{self, AtuCommand, ModeRequest, Select};
+use crate::protocol::commands::{self, ModeRequest, Select};
 use crate::protocol::errors::{self, Severity};
-use crate::protocol::messages::{AmpMode, BAUD_TABLE, addr, antenna_type_text, atac_text, atu_label_text};
+use crate::protocol::messages::{AmpMode, BAUD_TABLE, addr};
 use crate::radio::{self, RadioEvent, RadioHandle};
 use crate::state::AmpState;
 use crate::update::UpdateStatus;
@@ -76,7 +76,6 @@ struct SettingsFlags {
 enum Pending {
     TurnOff,
     Restart,
-    TunePrompt,
 }
 
 pub struct App {
@@ -412,9 +411,6 @@ impl App {
         }
         if self.amp.settings.is_none() {
             want.push(addr::SETTINGS);
-        }
-        if self.amp.antenna_names.iter().all(|n| n.is_empty()) {
-            want.push(addr::ANT_NAMES);
         }
         if want.is_empty() {
             return;
@@ -756,11 +752,9 @@ impl App {
         });
         ui.add_space(8.0);
 
-        widgets::card(ui, "Band & antenna", |ui| {
+        widgets::card(ui, "Band", |ui| {
             let max = self.amp.model().max_band();
             let cur_band = self.amp.current_band();
-            // Antenna/segment selection only exists with an ATU/ASEL; a bare 1200S has one port.
-            let multi_ant = self.amp.telemetry.as_ref().is_some_and(|t| t.atu_assigned());
             ui.add_enabled_ui(connected, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
@@ -779,38 +773,11 @@ impl App {
                         }
                     }
                 });
-                if multi_ant {
-                    ui.add_space(6.0);
-                    ui.horizontal(|ui| {
-                        ui.label("Antenna");
-                        let cur = self.amp.band.as_ref().map(|b| b.antenna).unwrap_or(0);
-                        for n in 1..=4u8 {
-                            let name = self.amp.antenna_names.get(n as usize - 1).map(|s| s.as_str()).unwrap_or("");
-                            let label = if name.is_empty() { format!("A{n}") } else { format!("{n}·{name}") };
-                            let btn = egui::Button::new(label).selected(cur == n);
-                            if ui.add(btn).clicked() {
-                                self.send(commands::select(Select::Antenna(n)));
-                            }
-                        }
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("Segment");
-                        if ui.button("◀").clicked() {
-                            self.send(commands::select(Select::PrevSegment));
-                        }
-                        if ui.button("▶").clicked() {
-                            self.send(commands::select(Select::NextSegment));
-                        }
-                    });
-                }
             });
             if let Some(b) = &self.amp.band {
                 ui.add_space(4.0);
                 let name = self.amp.current_band().and_then(band_by_number).map(|x| x.name).unwrap_or("?");
-                let mut line = format!("{} · {}–{} kHz", name, b.low_khz, b.high_khz);
-                if multi_ant {
-                    line += &format!(" · antenna {} ({}) · segment {}/{}", b.antenna, antenna_type_text(b.antenna_type), b.segment, b.segment_count);
-                }
+                let line = format!("{} · {}–{} kHz", name, b.low_khz, b.high_khz);
                 ui.label(RichText::new(line).size(12.5).color(MUTED));
             }
         });
@@ -843,34 +810,6 @@ impl App {
             }
         });
         ui.add_space(8.0);
-
-        // ATU appears only when one is assigned.
-        if self.amp.telemetry.as_ref().is_some_and(|t| t.atu_assigned()) {
-            widgets::card(ui, "ATU", |ui| {
-                let label = self.amp.band.as_ref().map(|b| atu_label_text(b.atu_label)).unwrap_or("");
-                if !label.is_empty() {
-                    ui.label(label);
-                }
-                if let Some(t) = &self.amp.telemetry {
-                    if let Some(s) = atac_text(t.mode_byte) {
-                        ui.label(RichText::new(s).color(AMBER));
-                    }
-                }
-                ui.horizontal(|ui| {
-                    if ui.button("Full tune").clicked() {
-                        self.pending = Some(Pending::TunePrompt);
-                    }
-                    if ui.button("Stop tune").clicked() {
-                        self.send(commands::atu(AtuCommand::StopTune));
-                    }
-                    if ui.button("Bypass").clicked() {
-                        let a = self.amp.band.as_ref().map(|b| b.antenna).unwrap_or(1);
-                        self.send(commands::atu(AtuCommand::Bypass(a)));
-                    }
-                });
-            });
-            ui.add_space(8.0);
-        }
 
         if let Some(sim) = self.link.as_ref().and_then(|l| l.sim.clone()) {
             widgets::card(ui, "Demo transmitter", |ui| {
@@ -1040,8 +979,6 @@ impl App {
         };
         let fs = self.amp.model().full_scale_w();
         let band = self.amp.current_band().and_then(band_by_number);
-        // Antenna selection only exists with an ATU/ASEL; a single-port amp has none.
-        let multi_ant = t.atu_assigned();
         let peak = self.cfg.peak_hold.then_some(self.amp.peak_forward_w);
         let temp_c = t.temp1_c();
         ui.spacing_mut().item_spacing = egui::vec2(6.0, 3.0);
@@ -1072,9 +1009,6 @@ impl App {
                 let name = band.map(|b| b.name).unwrap_or("–");
                 ui.label(RichText::new(format!("{name} · {:.3}–{:.3} MHz", lo as f32 / 1000.0, hi as f32 / 1000.0)).strong().size(11.5));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if multi_ant && ui.button("ANT").on_hover_text("Next antenna").clicked() {
-                        self.send(commands::select(Select::NextAntenna));
-                    }
                     let tip = if t.mode.is_operate() { "Switch to standby" } else { "Switch to operate" };
                     let (fill, txt) = if t.mode.is_operate() {
                         (GREEN, "OPR")
@@ -1513,10 +1447,6 @@ impl App {
         let (title, body) = match p {
             Pending::TurnOff => ("Power off amplifier?", "The amplifier will shut down. Remote power-on may not be available."),
             Pending::Restart => ("Restart amplifier?", "The amplifier will reboot and re-initialise."),
-            Pending::TunePrompt => (
-                "Start ATU full tune?",
-                "The transceiver must supply drive power during tuning, then remove it when instructed. Use low power.",
-            ),
         };
         let mut result = None;
         egui::Window::new(title).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
@@ -1537,7 +1467,6 @@ impl App {
                 match p {
                     Some(Pending::TurnOff) => self.send(commands::set_mode(ModeRequest::TurnOff)),
                     Some(Pending::Restart) => self.send(commands::set_mode(ModeRequest::Restart)),
-                    Some(Pending::TunePrompt) => self.send(commands::atu(AtuCommand::FullTune)),
                     None => {}
                 }
             }

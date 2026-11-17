@@ -17,7 +17,6 @@ pub struct AmpEdit {
     spacing: u16,
     polling: u16,
     buzzer: u8,
-    names: [String; 4],
     hello: String,
     tab: AmpTab,
 }
@@ -28,27 +27,24 @@ enum AmpTab {
     Operation,
     Cat,
     Identity,
-    Antennas,
 }
 
 impl AmpTab {
-    const ALL: [AmpTab; 4] = [Self::Operation, Self::Cat, Self::Identity, Self::Antennas];
+    const ALL: [AmpTab; 3] = [Self::Operation, Self::Cat, Self::Identity];
     fn label(self) -> &'static str {
         match self {
             Self::Operation => "Operation",
             Self::Cat => "CAT interface",
             Self::Identity => "User text",
-            Self::Antennas => "Antenna names",
         }
     }
 }
 
-const FLAGS: [(u8, &str); 5] = [
+const FLAGS: [(u8, &str); 4] = [
     (0, "Extra cooling"),
     (1, "Auto operate"),
     (2, "Amplifier shows temperature in °F"),
     (3, "CPU buzzer"),
-    (4, "ATAC procedure automatic"),
 ];
 
 const IFACES: [&str; 5] = ["None", "RS-232 levels", "TTL levels", "BCD code", "Analog"];
@@ -199,7 +195,6 @@ impl App {
             spacing: s.cat_byte_spacing_us,
             polling: s.cat_polling_ms,
             buzzer: s.buzzer_volume,
-            names: self.amp.antenna_names.clone(),
             tab: AmpTab::default(),
             hello: format!("{}{}", self.amp.hello[0], self.amp.hello[1]).trim_end().to_string(),
         })
@@ -213,7 +208,6 @@ impl App {
             self.edit = self.new_edit();
         }
         let connected = self.link.is_some() && self.amp.alive();
-        let multi_ant = self.amp.telemetry.as_ref().is_some_and(|t| t.atu_assigned());
         let mut open = true;
         let mut sends: Vec<Vec<u8>> = Vec::new();
         let mut refresh = false;
@@ -235,9 +229,6 @@ impl App {
             egui::Panel::left("amp_settings_nav").resizable(false).exact_size(160.0).show_inside(ui, |ui| {
                 ui.add_space(8.0);
                 for tab in AmpTab::ALL {
-                    if tab == AmpTab::Antennas && !multi_ant {
-                        continue;
-                    }
                     let sel = e.tab == tab;
                     let btn = egui::Button::new(RichText::new(tab.label()).size(14.0).strong())
                         .selected(sel)
@@ -352,21 +343,6 @@ impl App {
                                 ui.label(RichText::new("Up to 30 characters, shown on the amplifier (for example a callsign).").size(12.0).color(MUTED));
                             });
                         }
-                        AmpTab::Antennas => {
-                            widgets::card(ui, "Antenna names", |ui| {
-                                for (i, n) in e.names.iter_mut().enumerate() {
-                                    ui.horizontal(|ui| {
-                                        ui.label(format!("Antenna {}", i + 1));
-                                        ui.add(egui::TextEdit::singleline(n).char_limit(12).desired_width(140.0));
-                                    });
-                                }
-                                ui.add_space(4.0);
-                                if ui.button("Apply antenna names").clicked() {
-                                    sends.push(commands::antenna_names(&e.names));
-                                    refresh = true;
-                                }
-                            });
-                        }
                     });
                 });
             });
@@ -375,7 +351,7 @@ impl App {
             self.send(w);
         }
         if refresh {
-            for a in [addr::SETTINGS, addr::HELLO_1, addr::HELLO_2, addr::ANT_NAMES] {
+            for a in [addr::SETTINGS, addr::HELLO_1, addr::HELLO_2] {
                 self.send(commands::request_message(a));
             }
             self.say("Settings sent to the amplifier");

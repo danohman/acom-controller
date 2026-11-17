@@ -28,12 +28,9 @@ pub struct Simulator {
     last_tick: Instant,
     mode: u8, // mode nibble
     band: u8,
-    antenna: u8,
-    segment: u8,
     tx_allowed: bool,
     temp_c: f32,
     swr: f32,
-    atu_until: Option<Instant>,
     rng: u32,
 }
 
@@ -47,12 +44,9 @@ impl Simulator {
             last_tick: Instant::now(),
             mode: 5,
             band: 6,
-            antenna: 1,
-            segment: 1,
             tx_allowed: true,
             temp_c: 28.0,
             swr: 1.2,
-            atu_until: None,
             rng: 0x1234_5678,
         }
     }
@@ -84,7 +78,7 @@ impl Simulator {
         }
         let gain = 12.0;
         let fwd = if self.mode == 7 { (drive * gain + self.noise() * 8.0).clamp(0.0, 720.0) } else { 0.0 };
-        let target_swr = 1.15 + (self.antenna as f32) * 0.08 + if fault { 2.5 } else { 0.0 };
+        let target_swr = 1.23 + if fault { 2.5 } else { 0.0 };
         self.swr += (target_swr - self.swr) * 0.2;
         let refl_frac = ((self.swr - 1.0) / (self.swr + 1.0)).powi(2);
         let refl = fwd * refl_frac;
@@ -93,7 +87,7 @@ impl Simulator {
         self.temp_c += (target_t - self.temp_c) * 0.03;
         let powered = self.mode != 5 || true;
         let mut t = Telemetry {
-            mode_byte: (self.mode << 4) | if self.atu_until.is_some() { 0x02 } else { 0 },
+            mode_byte: self.mode << 4,
             flags1: if operate { (1 << 12) | (1 << 9) } else { 0 },
             flags2: (if self.tx_allowed { 1 << 4 } else { 0 }) | (if operate { (1 << 6) | (1 << 3) } else { 0 }) | (1 << 9),
             clock_s: self.started.elapsed().as_secs() as u32,
@@ -150,17 +144,10 @@ impl Simulator {
                     0x8F => self.band = p1.clamp(1, max),
                     0x80 => self.band = if self.band >= max { 1 } else { self.band + 1 },
                     0x40 => self.band = if self.band <= 1 { max } else { self.band - 1 },
-                    0x3F => self.antenna = p1.clamp(1, 4),
-                    0x30 => self.antenna = self.antenna % 4 + 1,
-                    0x2F => self.segment = p1.max(1),
                     _ => {}
                 }
                 self.reply_message(addr::BAND_INFO);
             }
-            0x0E if p2 == 0x01 => {
-                self.atu_until = Some(Instant::now() + Duration::from_secs(4));
-            }
-            0x0E if p2 == 0x03 => self.atu_until = None,
             0x08 => self.ctl.fault.store(false, Ordering::Relaxed),
             _ => {}
         }
@@ -177,26 +164,12 @@ impl Simulator {
             addr::SETTINGS => self.queue(addr::SETTINGS, &[0x30, 0x10, 0, 0, 0, 0, 0x0A, 0x00, 50]),
             addr::HELLO_1 => self.queue(addr::HELLO_1, b"DEMO AMPLIFIER "),
             addr::HELLO_2 => self.queue(addr::HELLO_2, b"               "),
-            addr::ANT_NAMES => {
-                let mut d = Vec::new();
-                for n in ["Dipole", "Yagi", "Vertical", "Loop"] {
-                    let mut b = [b' '; 12];
-                    b[..n.len()].copy_from_slice(n.as_bytes());
-                    d.extend_from_slice(&b);
-                }
-                self.queue(addr::ANT_NAMES, &d);
-            }
             addr::BAND_INFO => {
                 let b = band_by_number(self.band).copied().unwrap_or(BANDS[5]);
                 let mut d = vec![0u8; 17];
-                d[0] = self.antenna;
-                d[1] = 1;
                 d[2] = b.number;
-                d[3] = 8;
-                d[4] = self.segment.min(8);
                 d[5..7].copy_from_slice(&(b.low_khz as u16).to_le_bytes());
                 d[7..9].copy_from_slice(&(b.high_khz as u16).to_le_bytes());
-                d[9] = 0b0000_0111;
                 self.queue(addr::BAND_INFO, &d);
             }
             addr::ERROR_CODES => self.queue(addr::ERROR_CODES, &[0u8; 22]),
@@ -209,9 +182,6 @@ impl Port for Simulator {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         if self.last_tick.elapsed() >= Duration::from_millis(100) {
             self.last_tick = Instant::now();
-            if self.atu_until.is_some_and(|t| Instant::now() > t) {
-                self.atu_until = None;
-            }
             let t = self.telemetry();
             self.queue(addr::TELEMETRY, &encode_telemetry(&t));
         }

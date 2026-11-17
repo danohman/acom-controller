@@ -13,15 +13,10 @@ pub mod addr {
     pub const SERIAL: u8 = 0x13;
     pub const HELLO_1: u8 = 0x14;
     pub const HELLO_2: u8 = 0x15;
-    pub const ATU_INFO: u8 = 0x16;
-    pub const ANT_ASSIGN: u8 = 0x18;
-    pub const SEGMENT: u8 = 0x1A;
-    pub const ANT_NAMES: u8 = 0x1B;
     pub const ERROR_CODES: u8 = 0x21;
     pub const BAND_INFO: u8 = 0x27;
     pub const CAT_FROM_AMP: u8 = 0x2C;
     pub const RF_POWERS: u8 = 0x2D;
-    pub const ATU_MEASURE: u8 = 0x2E;
     pub const TELEMETRY: u8 = 0x2F;
     pub const HARD_FAULT_1: u8 = 0x31;
     pub const HARD_FAULT_2: u8 = 0x32;
@@ -29,11 +24,9 @@ pub mod addr {
     pub const COMMAND: u8 = 0x81;
     pub const HELLO_SET_1: u8 = 0x83;
     pub const HELLO_SET_2: u8 = 0x84;
-    pub const ANT_NAMES_SET: u8 = 0x85;
     pub const ACK: u8 = 0x86;
     pub const TELEMETRY_OFF: u8 = 0x91;
     pub const TELEMETRY_ON: u8 = 0x92;
-    pub const ANT_ASSIGN_SET: u8 = 0xA0;
     pub const CYCLIC_SET: u8 = 0xAA;
     pub const CAT_TO_AMP: u8 = 0xB0;
 }
@@ -179,12 +172,6 @@ impl Telemetry {
     }
     pub fn last_command_remote(&self) -> bool {
         self.flags1 & (1 << 15) != 0
-    }
-    pub fn default_antenna(&self) -> bool {
-        self.sys_flags & (1 << 3) != 0
-    }
-    pub fn atu_assigned(&self) -> bool {
-        self.sys_flags & (1 << 1) != 0
     }
     /// Efficiency estimate: forward power vs. PAM dissipation.
     pub fn dissipation_w(&self) -> f32 {
@@ -340,61 +327,9 @@ pub const BAUD_TABLE: [(u8, &str); 7] = [
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct BandInfo {
-    pub antenna: u8,
-    pub antenna_type: u8,
-    pub antenna_is_default: bool,
     pub band: u8,
-    pub segment_count: u8,
-    pub segment: u8,
     pub low_khz: u32,
     pub high_khz: u32,
-    /// Per-segment tuned flags (up to 56 in the extended message).
-    pub segments_tuned: Vec<bool>,
-    pub atu_label: u8,
-}
-
-pub fn atu_label_text(n: u8) -> &'static str {
-    match n {
-        1 => "ATU initialising",
-        2 => "Recalling settings",
-        3 => "Matching cycle…",
-        4 => "ATU memory transfer",
-        5 => "Completed",
-        6 => "ATU in bypass",
-        7 => "ATU matched",
-        8 => "Coarse ATU match",
-        9 => "No match found",
-        10 => "Settings outdated",
-        11 => "Memory settings",
-        _ => "",
-    }
-}
-
-pub fn antenna_type_text(t: u8) -> &'static str {
-    match t & 0x7F {
-        0 => "Sharp",
-        1 => "Regular",
-        2 => "Wide",
-        3 => "Fixed",
-        _ => "?",
-    }
-}
-
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct AtuMeasure {
-    pub temp1_k: u16,
-    pub temp2_k: u16,
-    pub input_w: f32,
-    pub forward_w: f32,
-    pub reflected_w: f32,
-    pub atu_supply_v: f32,
-    pub antenna_v: f32,
-    pub antenna_a: f32,
-    pub antenna_fwd_w: f32,
-    pub antenna_refl_w: f32,
-    pub atu_swr: f32,
-    pub atu_temp_k: u16,
-    pub atu_hours: u16,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -430,12 +365,9 @@ pub enum Message {
     Settings(Settings),
     Serial(String),
     Hello { part: u8, text: String },
-    AtuInfo { atu_type: u8, hw: String, fw: String, serial: String, tune_validity_h: Option<u16> },
-    AntennaNames([String; 4]),
     ErrorCodes(Vec<u8>),
     BandInfo(BandInfo),
     RfPowers { input_w: f32, forward_w: f32, reflected_w: f32, mode_byte: u8 },
-    AtuMeasure(AtuMeasure),
     Telemetry(Telemetry),
     HardFault(HardFaultRecord),
     HardFaultSnapshot(HardFaultSnapshot),
@@ -492,64 +424,21 @@ pub fn decode(f: &Frame) -> Message {
         addr::SERIAL if d.len() >= 12 => Message::Serial(ascii(&d[..12])),
         addr::HELLO_1 if d.len() >= 15 => Message::Hello { part: 0, text: ascii(&d[..15]) },
         addr::HELLO_2 if d.len() >= 15 => Message::Hello { part: 1, text: ascii(&d[..15]) },
-        addr::ATU_INFO if d.len() >= 15 => Message::AtuInfo {
-            atu_type: d[0],
-            hw: ver(d, 1),
-            fw: ver(d, 3),
-            serial: ascii(&d[5..15]),
-            tune_validity_h: (d.len() >= 17).then(|| u16::from_be_bytes([d[15], d[16]])),
-        },
-        addr::ANT_NAMES if d.len() >= 48 => Message::AntennaNames([
-            ascii(&d[0..12]),
-            ascii(&d[12..24]),
-            ascii(&d[24..36]),
-            ascii(&d[36..48]),
-        ]),
         addr::ERROR_CODES if d.len() >= 22 => {
             let words: Vec<u16> = (0..11).map(|i| u16le(d, i * 2)).collect();
             Message::ErrorCodes(super::errors::active_codes(&words))
         }
-        addr::BAND_INFO if d.len() >= 17 => {
-            // 7 bytes of per-segment "tuned" flags cover up to 56 segments.
-            let seg_stat: Vec<bool> = d[9..16]
-                .iter()
-                .flat_map(|b| (0..8).map(move |i| b & (1 << i) != 0))
-                .collect();
-            let (low, high) = (fix_frequency(u16le(d, 5)), fix_frequency(u16le(d, 7)));
-            Message::BandInfo(BandInfo {
-                antenna: d[0],
-                antenna_type: d[1] & 0x7F,
-                antenna_is_default: d[1] & 0x80 != 0,
-                band: d[2],
-                segment_count: d[3],
-                segment: d[4],
-                low_khz: low,
-                high_khz: high,
-                segments_tuned: seg_stat,
-                atu_label: d[16],
-            })
-        }
+        addr::BAND_INFO if d.len() >= 17 => Message::BandInfo(BandInfo {
+            band: d[2],
+            low_khz: fix_frequency(u16le(d, 5)),
+            high_khz: fix_frequency(u16le(d, 7)),
+        }),
         addr::RF_POWERS if d.len() >= 7 => Message::RfPowers {
             input_w: u16le(d, 0) as f32 / 10.0,
             forward_w: u16le(d, 2) as f32,
             reflected_w: u16le(d, 4) as f32,
             mode_byte: d[6],
         },
-        addr::ATU_MEASURE if d.len() >= 27 => Message::AtuMeasure(AtuMeasure {
-            temp1_k: u16le(d, 0),
-            temp2_k: u16le(d, 2),
-            input_w: u16le(d, 4) as f32 / 10.0,
-            forward_w: u16le(d, 6) as f32,
-            reflected_w: u16le(d, 8) as f32,
-            atu_supply_v: u16le(d, 10) as f32 / 10.0,
-            antenna_v: u16le(d, 12) as f32,
-            antenna_a: u16le(d, 14) as f32 / 10.0,
-            antenna_fwd_w: u16le(d, 16) as f32,
-            antenna_refl_w: u16le(d, 18) as f32,
-            atu_swr: u16le(d, 20) as f32 / 100.0,
-            atu_temp_k: u16le(d, 22),
-            atu_hours: u16le(d, 24),
-        }),
         addr::TELEMETRY if d.len() >= 68 => Message::Telemetry(decode_telemetry(d)),
         addr::HARD_FAULT_1 if d.len() >= 32 => {
             let mut words = [0u16; 10];

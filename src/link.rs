@@ -245,8 +245,8 @@ fn run(cfg: Config, sim: Option<Arc<SimControl>>, cmds: Receiver<Cmd>, ev: Sende
     // Ask for everything we want to show statically.
     let mut startup: Vec<Vec<u8>> = vec![commands::telemetry_enable(true)];
     for a in [
-        addr::SYSTEM_INFO, addr::SETTINGS, addr::HELLO_1, addr::HELLO_2, addr::ANT_NAMES,
-        addr::BAND_INFO, addr::ATU_INFO, addr::ERROR_CODES,
+        addr::SYSTEM_INFO, addr::SETTINGS, addr::HELLO_1, addr::HELLO_2,
+        addr::BAND_INFO, addr::ERROR_CODES,
     ] {
         startup.push(commands::request_message(a));
     }

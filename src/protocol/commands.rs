@@ -14,12 +14,9 @@ mod cmd {
     pub const CAT_SETTINGS_2: u8 = 0x06;
     pub const CAT_SETTINGS_3: u8 = 0x07;
     pub const CLEAR_SOFT_FAULTS: u8 = 0x08;
-    pub const BAND_ANTENNA_SEGMENT: u8 = 0x09;
+    pub const BAND_SELECT: u8 = 0x09;
     pub const BUZZER: u8 = 0x0A;
     pub const FACTORY_RESTORE: u8 = 0x0D;
-    pub const ATU: u8 = 0x0E;
-    pub const ATU_SERVICE: u8 = 0x10;
-    pub const ATU_VALIDITY: u8 = 0x11;
 }
 
 /// Target operating state for [`set_mode`].
@@ -98,17 +95,12 @@ pub fn clear_soft_faults() -> Vec<u8> {
     management(cmd::CLEAR_SOFT_FAULTS, 0, 0)
 }
 
-/// Manual band / antenna / segment selection.
+/// Manual band selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Select {
     Band(u8),
     NextBand,
     PrevBand,
-    Antenna(u8),
-    NextAntenna,
-    Segment(u8),
-    NextSegment,
-    PrevSegment,
 }
 
 pub fn select(s: Select) -> Vec<u8> {
@@ -116,13 +108,8 @@ pub fn select(s: Select) -> Vec<u8> {
         Select::Band(n) => (n, 0x8F),
         Select::NextBand => (0, 0x80),
         Select::PrevBand => (0, 0x40),
-        Select::Antenna(n) => (n, 0x3F),
-        Select::NextAntenna => (0, 0x30),
-        Select::Segment(n) => (n, 0x2F),
-        Select::NextSegment => (0, 0x20),
-        Select::PrevSegment => (0, 0x10),
     };
-    management(cmd::BAND_ANTENNA_SEGMENT, arg, sub)
+    management(cmd::BAND_SELECT, arg, sub)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,54 +133,10 @@ pub enum FactoryRestore {
     WorkingHours = 2,
     ErrorLog = 3,
     Everything = 4,
-    AntennaAssignments = 5,
 }
 
 pub fn factory_restore(what: FactoryRestore) -> Vec<u8> {
     management(cmd::FACTORY_RESTORE, 0, what as u8)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AtuCommand {
-    FullTune,
-    Bypass(u8),
-    StopTune,
-    /// 0x00 = unassigned, 0x21 = ATU assigned.
-    Assign(bool),
-}
-
-pub fn atu(c: AtuCommand) -> Vec<u8> {
-    let (arg, sub) = match c {
-        AtuCommand::FullTune => (0, 0x01),
-        AtuCommand::Bypass(ant) => (ant, 0x02),
-        AtuCommand::StopTune => (0, 0x03),
-        AtuCommand::Assign(on) => (if on { 0x21 } else { 0x00 }, 0xFF),
-    };
-    management(cmd::ATU, arg, sub)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AtuService {
-    EraseCurrentTuning,
-    EraseAntennaTunings(u8),
-    EraseAllTunings,
-    EraseWholeMemory,
-    Exit,
-}
-
-pub fn atu_service(s: AtuService) -> Vec<u8> {
-    let (kind, ant) = match s {
-        AtuService::EraseCurrentTuning => (0x01, 0),
-        AtuService::EraseAntennaTunings(a) => (0x02, a),
-        AtuService::EraseAllTunings => (0x04, 0),
-        AtuService::EraseWholeMemory => (0x08, 0),
-        AtuService::Exit => (0xFF, 0),
-    };
-    management(cmd::ATU_SERVICE, kind, ant)
-}
-
-pub fn set_atu_validity_hours(hours: u16) -> Vec<u8> {
-    management(cmd::ATU_VALIDITY, (hours >> 8) as u8, hours as u8)
 }
 
 pub fn telemetry_enable(on: bool) -> Vec<u8> {
@@ -203,17 +146,6 @@ pub fn telemetry_enable(on: bool) -> Vec<u8> {
 /// Change which message the amplifier sends cyclically (e.g. 0x2F).
 pub fn set_cyclic_message(address: u8) -> Vec<u8> {
     encode(addr::CYCLIC_SET, &[address])
-}
-
-/// Write the four antenna-type / band-mask assignments.
-pub fn antenna_assignments(types: [u8; 4], band_masks: [u16; 4]) -> Vec<u8> {
-    let mut d = Vec::with_capacity(12);
-    d.extend_from_slice(&types.map(|t| t & 0x07));
-    for m in band_masks {
-        d.push((m >> 8) as u8 & 0x07);
-        d.push(m as u8);
-    }
-    encode(addr::ANT_ASSIGN_SET, &d)
 }
 
 /// Push a 30-character user text ("hello message", typically a callsign).
@@ -228,19 +160,6 @@ pub fn hello_message(text: &str) -> [Vec<u8>; 2] {
     ]
 }
 
-/// Write 4 antenna display names (12 characters each).
-pub fn antenna_names(names: &[String; 4]) -> Vec<u8> {
-    let mut d = Vec::with_capacity(48);
-    for n in names {
-        let mut b = [b' '; 12];
-        for (i, c) in n.bytes().filter(u8::is_ascii).take(12).enumerate() {
-            b[i] = c;
-        }
-        d.extend_from_slice(&b);
-    }
-    encode(addr::ANT_NAMES_SET, &d)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,11 +172,8 @@ mod tests {
             request_message(0x11),
             set_mode(ModeRequest::OperateRx),
             select(Select::Band(6)),
-            atu(AtuCommand::FullTune),
             clear_soft_faults(),
             hello_message("N0CALL")[0].clone(),
-            antenna_names(&["A".into(), "B".into(), "C".into(), "D".into()]),
-            antenna_assignments([1, 1, 2, 3], [0x7FF, 0, 1, 2]),
         ];
         for wire in all {
             let frames = Decoder::new().push(&wire);

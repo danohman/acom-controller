@@ -51,11 +51,19 @@ Captured in demo mode with the simulated amplifier transmitting.
 
 Always try a new setup into a dummy load first.
 
+## What's new in 1.0.1
+
+- **Amplifier only.** Every ACOM solid-state amplifier has a single antenna output (the 500S has two, with no
+  software selection), and none has an internal tuner, so the controls for external antenna tuners and
+  selectors were removed: the antenna and segment buttons, the ATU card, the *ANT* button in the compact
+  layout and the *Antenna names* settings page. The band card is now just *Band*.
+- New screenshots.
+
 ## What's new in 1.0.0
 
 - **Settings in their own window** with sections (Connection, Power & sharing, Radio, Display, Alerts,
   System, About), so it is usable even from the slim compact window.
-- **Amplifier settings** got the same treatment (Operation, CAT interface, User text, Antenna names).
+- **Amplifier settings** got the same treatment (Operation, CAT interface, User text).
 - **Segmented green/amber/red meters** on every bar graph. The forward-power zones follow the connected
   model's rated power (amber from 80 %, red at rated power).
 - **Compact layout** is slimmer: no top bar, the settings button sits in the status strip, and the window
@@ -103,7 +111,7 @@ Notes:
 - **Live dashboard** – forward/reflected/drive power, SWR, PA current, voltages, temperatures,
   fan speed, active LPF, with history plots and peak hold.
 - **Full control** – standby/operate, TX inhibit, band selection (current band highlighted), fault clearing,
-  alarm log; antenna/segment/ATU controls appear only when the amplifier has an ATU/ASEL.
+  alarm log.
 - **Remote power on/off** – one header button that switches between *Power on* and *Power off*. Power-on drives
   the RS-232 DTR/RTS control lines (default DTR+RTS, 1000 ms; configurable in Settings). The app keeps
   polling while the amplifier is off and picks it up as soon as it boots.
@@ -157,9 +165,9 @@ PARTICULAR PURPOSE. See the [LICENSE](LICENSE) file or <https://www.gnu.org/lice
 - [x] Radio integrations (N1MM+ UDP, rigctld, shared-memory loggers) – untested with real loggers
 - [x] Remote (TCP) mode – untested
 - [x] Remote power on/off verified on ACOM 1200S
-- [ ] Wider hardware validation (other models, ATU/ASEL, units and severity assumptions)
+- [ ] Wider hardware validation (other models, units and severity assumptions)
 - [x] Exe icon (embedded), tray icon (Windows/macOS; optional close-to-tray)
 - [x] Sound alerts (warnings/faults, high SWR, link lost/restored; synthesised tones)
 - [x] Hard-fault viewer (reads records from the amplifier; the 1200S answers only some requests, so loading can be partial)
-- [x] Amplifier settings editor (operation flags, buzzer volume, CAT interface, user text, antenna names)
+- [x] Amplifier settings editor (operation flags, buzzer volume, CAT interface, user text)
 - [x] Light/dark themes, compact layout, update check
