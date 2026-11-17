@@ -1,6 +1,6 @@
 [package]
 name = "acom-controller"
-version = "1.0.2"
+version = "1.0.3-beta"
 edition = "2024"
 description = "Modern remote controller for ACOM solid-state amplifiers"
 license = "GPL-3.0-or-later"
