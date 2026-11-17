@@ -1651,7 +1651,7 @@ impl App {
 
 /// Elapsed seconds as years, months, days, hours and minutes (365-day years, 30-day months),
 /// leaving out leading zero units, e.g. "11 months 20 days 4 hours 14 mins".
-/// Clamp a window of `size` points at `pos` (points) into the work area of the monitor it is on.
+/// Clamp a window of `size` points at `pos` (points) into the work area of the monitor holding its centre.
 /// Windows only; elsewhere the position is returned unchanged.
 fn clamp_to_monitor(pos: egui::Pos2, size: egui::Vec2, ppp: f32) -> egui::Pos2 {
     #[cfg(windows)]
@@ -1661,7 +1661,12 @@ fn clamp_to_monitor(pos: egui::Pos2, size: egui::Vec2, ppp: f32) -> egui::Pos2 {
         let (x, y) = (pos.x * ppp, pos.y * ppp);
         // SAFETY: plain Win32 calls with a zero-initialised, correctly sized MONITORINFO.
         let work = unsafe {
-            let mon = MonitorFromPoint(windows_sys::Win32::Foundation::POINT { x: x as i32, y: y as i32 }, MONITOR_DEFAULTTONEAREST);
+            // Pick the monitor by the window's centre: the outer top-left corner includes the invisible
+            // resize border and can lie a few pixels inside the neighbouring monitor.
+            let mon = MonitorFromPoint(
+                windows_sys::Win32::Foundation::POINT { x: (x + w / 2.0) as i32, y: (y + h / 2.0) as i32 },
+                MONITOR_DEFAULTTONEAREST,
+            );
             let mut mi: MONITORINFO = std::mem::zeroed();
             mi.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
             if GetMonitorInfoW(mon, &mut mi) == 0 {
