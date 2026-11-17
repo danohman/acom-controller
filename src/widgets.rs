@@ -50,7 +50,7 @@ impl Meter<'_> {
         );
         let frac = |v: f32| ((v - self.min) / (self.max - self.min)).clamp(0.0, 1.0);
         // Rises are instant; falls decay smoothly (about a quarter second to settle).
-        let id = ui.id().with(("meter", self.label));
+        let id = ui.scope_id().with(("meter", self.label));
         let target = frac(self.value);
         let shown = ui.ctx().data(|d| d.get_temp::<f32>(id)).unwrap_or(target);
         let f = if target >= shown {

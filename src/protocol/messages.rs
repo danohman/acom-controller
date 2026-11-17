@@ -5,7 +5,6 @@ use super::frame::Frame;
 
 pub mod addr {
     pub const BAD_MESSAGE: u8 = 0x01;
-    pub const REQUEST: u8 = 0x02;
     pub const OK: u8 = 0x03;
     pub const ERR: u8 = 0x04;
     pub const SYSTEM_INFO: u8 = 0x11;
@@ -27,8 +26,6 @@ pub mod addr {
     pub const ACK: u8 = 0x86;
     pub const TELEMETRY_OFF: u8 = 0x91;
     pub const TELEMETRY_ON: u8 = 0x92;
-    pub const CYCLIC_SET: u8 = 0xAA;
-    pub const CAT_TO_AMP: u8 = 0xB0;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -86,26 +83,6 @@ impl AmpMode {
     }
 }
 
-/// Sub-state of the ATAC (ATU tune) procedure, from the mode byte 0x8X.
-pub fn atac_text(mode_byte: u8) -> Option<&'static str> {
-    if mode_byte >> 4 != 8 {
-        return None;
-    }
-    Some(match mode_byte & 0x0F {
-        0 => "Apply transceiver power to tune",
-        1 => "Apply transceiver power (CAT)",
-        2 => "Full tune in progress",
-        3 => "Remove drive power (CAT)",
-        4 => "Remove drive power",
-        5 => "Tuned: excellent (SWR < 1.3)",
-        6 => "Tuned: good (SWR < 1.6)",
-        7 => "Tuned: bad (SWR ≥ 1.6)",
-        8 => "Full tune failed",
-        9 => "Tune interrupted by operator",
-        _ => "ATU procedure",
-    })
-}
-
 /// The 72-byte cyclic status message (0x2F): the primary telemetry source.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Telemetry {
@@ -146,34 +123,13 @@ impl Telemetry {
     pub fn temp1_c(&self) -> f32 {
         self.temp1_k as f32 - 273.15
     }
-    pub fn temp2_c(&self) -> f32 {
-        self.temp2_k as f32 - 273.15
-    }
     pub fn tx_access_enabled(&self) -> bool {
         self.flags2 & (1 << 4) != 0
-    }
-    pub fn output_relay(&self) -> bool {
-        self.flags2 & (1 << 6) != 0
-    }
-    pub fn input_relay(&self) -> bool {
-        self.flags2 & (1 << 3) != 0
-    }
-    pub fn key_in(&self) -> bool {
-        self.flags2 & (1 << 1) != 0
-    }
-    pub fn hv_on(&self) -> bool {
-        self.flags1 & (1 << 12) != 0
-    }
-    pub fn bias_on(&self) -> bool {
-        self.flags1 & (1 << 9) != 0
     }
     pub fn lpf_tuned(&self) -> bool {
         self.flags2 & (1 << 9) != 0
     }
-    pub fn last_command_remote(&self) -> bool {
-        self.flags1 & (1 << 15) != 0
-    }
-    /// Efficiency estimate: forward power vs. PAM dissipation.
+    /// Total PAM dissipation.
     pub fn dissipation_w(&self) -> f32 {
         self.pam1_dissipation_w + self.pam2_dissipation_w
     }
@@ -193,16 +149,6 @@ pub enum AmpModel {
 }
 
 impl AmpModel {
-    pub const ALL: [AmpModel; 7] = [
-        Self::Acom600S,
-        Self::Acom1200S,
-        Self::Acom700S,
-        Self::Acom600SNewLpf,
-        Self::Acom2020S,
-        Self::Acom500S,
-        Self::Acom1400S,
-    ];
-
     pub fn from_code(c: u8) -> Self {
         match c {
             1 => Self::Acom600S,
@@ -288,33 +234,6 @@ pub struct Settings {
     pub buzzer_volume: u8,
 }
 
-impl Settings {
-    pub fn extended_protocol(&self) -> bool {
-        self.user_flags & (1 << 7) != 0
-    }
-    pub fn fahrenheit(&self) -> bool {
-        self.user_flags & (1 << 2) != 0
-    }
-    pub fn auto_operate(&self) -> bool {
-        self.user_flags & (1 << 1) != 0
-    }
-    pub fn extra_cooling(&self) -> bool {
-        self.user_flags & 1 != 0
-    }
-    pub fn buzzer(&self) -> bool {
-        self.user_flags & (1 << 3) != 0
-    }
-    pub fn operate_access(&self) -> bool {
-        self.user_flags & (1 << 6) != 0
-    }
-    pub fn atac_auto(&self) -> bool {
-        self.user_flags & (1 << 4) != 0
-    }
-    pub fn on_button_short(&self) -> bool {
-        self.user_flags & (1 << 5) != 0
-    }
-}
-
 pub const BAUD_TABLE: [(u8, &str); 7] = [
     (0, "None"),
     (1, "1200"),
@@ -358,7 +277,7 @@ pub struct HardFaultSnapshot {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Message {
-    BadMessage,
+    Invalid,
     Ok(u16),
     Err(u16),
     SystemInfo(SystemInfo),
@@ -398,7 +317,7 @@ pub fn decode(f: &Frame) -> Message {
     let d = f.data.as_slice();
     let unknown = || Message::Unknown { address: f.address, len: d.len() + 4 };
     match f.address {
-        addr::BAD_MESSAGE => Message::BadMessage,
+        addr::BAD_MESSAGE => Message::Invalid,
         addr::OK if d.len() >= 2 => Message::Ok(u16::from_be_bytes([d[0], d[1]])),
         addr::ERR if d.len() >= 2 => Message::Err(u16::from_be_bytes([d[0], d[1]])),
         addr::SYSTEM_INFO if d.len() >= 26 => Message::SystemInfo(SystemInfo {
@@ -516,10 +435,7 @@ fn decode_telemetry(d: &[u8]) -> Telemetry {
 /// simulator and by tests to prove decode/encode symmetry.
 pub fn encode_telemetry(t: &Telemetry) -> Vec<u8> {
     let mut d = vec![0u8; 68];
-    let mut put = |i: usize, v: u16| {
-        d[i..i + 2].copy_from_slice(&v.to_le_bytes());
-    };
-    // Written through a closure borrowing `d`; do the byte fields afterwards.
+    let mut put = |i: usize, v: u16| d[i..i + 2].copy_from_slice(&v.to_le_bytes());
     put(1, t.flags1);
     put(3, t.flags2);
     put(9, (t.clock_s >> 16) as u16);
@@ -599,7 +515,7 @@ mod tests {
         assert_eq!(back.bias_mv, t.bias_mv);
         assert_eq!(back.fan_speed, 2);
         assert_eq!(back.lpf_channel, 6);
-        assert!(back.hv_on());
+        assert_eq!(back.flags1, t.flags1);
         assert_eq!(back.clock_s, 70_000);
     }
 

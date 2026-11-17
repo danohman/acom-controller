@@ -75,7 +75,7 @@ pub fn text(code: u8) -> Option<String> {
                 0x03 => format!("PAM{pam} IDLE CURRENT TOO LOW"),
                 0x04 => format!("PAM{pam} CURRENT WARNING"),
                 0x05 => format!("PAM{pam} EXCESSIVE CURRENT"),
-                0x06 | 0x07 | 0x08 | 0x09 => {
+                0x06..=0x09 => {
                     format!("{} VOLTAGE ERROR", bias_name((o - 6) + (pam - 1) * 4))
                 }
                 0x0A..=0x0D => format!(

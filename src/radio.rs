@@ -75,12 +75,12 @@ fn n1mm(cfg: &Config, tx: &Sender<RadioEvent>, stop: &AtomicBool, ctx: &eframe::
     emit(tx, ctx, RadioEvent::Status(format!("Listening on UDP {}", cfg.n1mm_port)));
     let mut buf = [0u8; 2048];
     while !stop.load(Ordering::Relaxed) {
-        if let Ok(n) = sock.recv(&mut buf) {
-            if let Some((radio, khz)) = parse_n1mm(&String::from_utf8_lossy(&buf[..n])) {
-                if radio == cfg.radio_number && khz > 0 {
-                    emit(tx, ctx, RadioEvent::Frequency(khz));
-                }
-            }
+        if let Ok(n) = sock.recv(&mut buf)
+            && let Some((radio, khz)) = parse_n1mm(&String::from_utf8_lossy(&buf[..n]))
+            && radio == cfg.radio_number
+            && khz > 0
+        {
+            emit(tx, ctx, RadioEvent::Frequency(khz));
         }
     }
 }
@@ -92,9 +92,10 @@ fn rigctld(cfg: &Config, tx: &Sender<RadioEvent>, stop: &AtomicBool, ctx: &efram
             Ok(s) => {
                 let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
                 emit(tx, ctx, RadioEvent::Status(format!("Connected to {addr}")));
-                let mut w = match s.try_clone() {
-                    Ok(w) => w,
-                    Err(_) => continue,
+                let Ok(mut w) = s.try_clone() else {
+                    emit(tx, ctx, RadioEvent::Status("rigctld: cannot duplicate socket".into()));
+                    pause(stop);
+                    continue;
                 };
                 let mut r = BufReader::new(s);
                 let mut line = String::new();
@@ -106,10 +107,10 @@ fn rigctld(cfg: &Config, tx: &Sender<RadioEvent>, stop: &AtomicBool, ctx: &efram
                     if r.read_line(&mut line).unwrap_or(0) == 0 {
                         break;
                     }
-                    if let Ok(hz) = line.trim().parse::<u64>() {
-                        if hz > 0 {
-                            emit(tx, ctx, RadioEvent::Frequency((hz / 1000) as u32));
-                        }
+                    if let Ok(hz) = line.trim().parse::<u64>()
+                        && hz > 0
+                    {
+                        emit(tx, ctx, RadioEvent::Frequency((hz / 1000) as u32));
                     }
                     std::thread::sleep(Duration::from_millis(400));
                 }
@@ -117,12 +118,17 @@ fn rigctld(cfg: &Config, tx: &Sender<RadioEvent>, stop: &AtomicBool, ctx: &efram
             }
             Err(e) => emit(tx, ctx, RadioEvent::Status(format!("{addr}: {e}"))),
         }
-        for _ in 0..20 {
-            if stop.load(Ordering::Relaxed) {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(250));
+        pause(stop);
+    }
+}
+
+/// Wait 5 s before reconnecting, waking early when asked to stop.
+fn pause(stop: &AtomicBool) {
+    for _ in 0..20 {
+        if stop.load(Ordering::Relaxed) {
+            return;
         }
+        std::thread::sleep(Duration::from_millis(250));
     }
 }
 

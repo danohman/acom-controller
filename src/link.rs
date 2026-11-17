@@ -10,7 +10,6 @@ use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 /// Minimum spacing between transmitted messages (spec: 20 ms).
@@ -167,10 +166,10 @@ struct Bridge {
 }
 
 impl Bridge {
-    fn new(port: u16) -> Option<Self> {
-        let l = TcpListener::bind(("0.0.0.0", port)).ok()?;
-        l.set_nonblocking(true).ok()?;
-        Some(Self { listener: l, clients: Vec::new() })
+    fn new(port: u16) -> io::Result<Self> {
+        let listener = TcpListener::bind(("0.0.0.0", port))?;
+        listener.set_nonblocking(true)?;
+        Ok(Self { listener, clients: Vec::new() })
     }
 
     /// Returns true if the number of clients changed.
@@ -209,6 +208,17 @@ impl Bridge {
     }
 }
 
+/// Write a frame, first waiting out the minimum spacing since the previous transmission.
+fn write_paced(port: &mut Box<dyn Port>, wire: &[u8], last_tx: &mut Instant) -> io::Result<()> {
+    let since = last_tx.elapsed();
+    if since < TX_SPACING {
+        std::thread::sleep(TX_SPACING - since);
+    }
+    port.write_all(wire)?;
+    *last_tx = Instant::now();
+    Ok(())
+}
+
 fn run(cfg: Config, sim: Option<Arc<SimControl>>, cmds: Receiver<Cmd>, ev: Sender<Event>, ctx: eframe::egui::Context) {
     let send = |e: Event| {
         let _ = ev.send(e);
@@ -224,23 +234,17 @@ fn run(cfg: Config, sim: Option<Arc<SimControl>>, cmds: Receiver<Cmd>, ev: Sende
     send(Event::Connected(port.name()));
 
     let sharing = cfg.share_enabled && cfg.connection == Connection::Serial;
-    let mut bridge = if sharing { Bridge::new(cfg.share_port) } else { None };
+    let mut bridge = if sharing {
+        Bridge::new(cfg.share_port)
+            .map_err(|e| send(Event::Notice(format!("Network sharing unavailable on port {}: {e}", cfg.share_port))))
+            .ok()
+    } else {
+        None
+    };
     let mut dec = Decoder::new();
-    let mut last_tx = Instant::now() - TX_SPACING;
+    let mut last_tx = Instant::now().checked_sub(TX_SPACING).unwrap_or_else(Instant::now);
     let mut last_rx = Instant::now();
     let mut buf = [0u8; 512];
-    let stop = AtomicBool::new(false);
-
-    // Pace and write a frame.
-    let mut write = |port: &mut Box<dyn Port>, wire: &[u8], last_tx: &mut Instant| -> io::Result<()> {
-        let since = last_tx.elapsed();
-        if since < TX_SPACING {
-            std::thread::sleep(TX_SPACING - since);
-        }
-        port.write_all(wire)?;
-        *last_tx = Instant::now();
-        Ok(())
-    };
 
     // Ask for everything we want to show statically.
     let mut startup: Vec<Vec<u8>> = vec![commands::telemetry_enable(true)];
@@ -251,19 +255,19 @@ fn run(cfg: Config, sim: Option<Arc<SimControl>>, cmds: Receiver<Cmd>, ev: Sende
         startup.push(commands::request_message(a));
     }
     for w in &startup {
-        if let Err(e) = write(&mut port, w, &mut last_tx) {
+        if let Err(e) = write_paced(&mut port, w, &mut last_tx) {
             send(Event::Disconnected(e.to_string()));
             return;
         }
     }
     let mut last_poke = Instant::now();
 
-    while !stop.load(Ordering::Relaxed) {
+    loop {
         // 1. Commands from the UI
         loop {
             match cmds.try_recv() {
                 Ok(Cmd::Send(w)) => {
-                    if let Err(e) = write(&mut port, &w, &mut last_tx) {
+                    if let Err(e) = write_paced(&mut port, &w, &mut last_tx) {
                         send(Event::Disconnected(e.to_string()));
                         return;
                     }
@@ -300,11 +304,11 @@ fn run(cfg: Config, sim: Option<Arc<SimControl>>, cmds: Receiver<Cmd>, ev: Sende
             let mut changed = b.accept();
             let (data, c2) = b.collect();
             changed |= c2;
-            if !data.is_empty() {
-                if let Err(e) = write(&mut port, &data, &mut last_tx) {
-                    send(Event::Disconnected(e.to_string()));
-                    return;
-                }
+            if !data.is_empty()
+                && let Err(e) = write_paced(&mut port, &data, &mut last_tx)
+            {
+                send(Event::Disconnected(e.to_string()));
+                return;
             }
             if changed {
                 send(Event::Clients(b.clients.len()));
@@ -316,7 +320,7 @@ fn run(cfg: Config, sim: Option<Arc<SimControl>>, cmds: Receiver<Cmd>, ev: Sende
         if last_rx.elapsed() > Duration::from_secs(3) && last_poke.elapsed() > Duration::from_secs(3) {
             last_poke = Instant::now();
             for w in &startup {
-                if let Err(e) = write(&mut port, w, &mut last_tx) {
+                if let Err(e) = write_paced(&mut port, w, &mut last_tx) {
                     send(Event::Disconnected(e.to_string()));
                     return;
                 }
@@ -332,15 +336,15 @@ fn run(cfg: Config, sim: Option<Arc<SimControl>>, cmds: Receiver<Cmd>, ev: Sende
             }
             Ok(n) => {
                 last_rx = Instant::now();
-                if let Some(b) = bridge.as_mut() {
-                    if b.broadcast(&buf[..n]) {
-                        send(Event::Clients(b.clients.len()));
-                    }
+                if let Some(b) = bridge.as_mut()
+                    && b.broadcast(&buf[..n])
+                {
+                    send(Event::Clients(b.clients.len()));
                 }
                 for f in dec.push(&buf[..n]) {
                     let msg = decode(&f);
                     // Acknowledge everything the amplifier initiates.
-                    let _ = write(&mut port, &commands::ack(f.address), &mut last_tx);
+                    let _ = write_paced(&mut port, &commands::ack(f.address), &mut last_tx);
                     send(Event::Rx { address: f.address, len: f.data.len() + 4 });
                     send(Event::Message(msg));
                 }

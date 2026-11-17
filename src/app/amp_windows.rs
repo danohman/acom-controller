@@ -1,7 +1,7 @@
 //! Hard-fault viewer and amplifier settings editor windows.
 
 use super::{App, sev_color};
-use crate::protocol::commands::{self, Beep};
+use crate::protocol::commands;
 use crate::protocol::errors;
 use crate::protocol::messages::{BAUD_TABLE, addr};
 use crate::widgets::{self, GREEN, MUTED, RED};
@@ -222,12 +222,12 @@ impl App {
                 open = false;
             }
             let Some(e) = self.edit.as_mut() else {
-                egui::CentralPanel::default().show_inside(ui, |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
                     ui.label(RichText::new("Waiting for the amplifier's settings…").color(MUTED));
                 });
                 return;
             };
-            egui::Panel::left("amp_settings_nav").resizable(false).exact_size(160.0).show_inside(ui, |ui| {
+            egui::Panel::left("amp_settings_nav").resizable(false).exact_size(160.0).show(ui, |ui| {
                 ui.add_space(8.0);
                 for tab in AmpTab::ALL {
                     let sel = e.tab == tab;
@@ -240,8 +240,8 @@ impl App {
                     }
                 }
             });
-            egui::CentralPanel::default().show_inside(ui, |ui| {
-                egui::Panel::bottom("amp_settings_foot").show_inside(ui, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
+                egui::Panel::bottom("amp_settings_foot").show(ui, |ui| {
                     ui.add_space(4.0);
                     if connected {
                         ui.label(RichText::new("Changes are written to the amplifier's memory.").size(12.0).color(GREEN));
@@ -274,7 +274,7 @@ impl App {
                                     ui.label("Volume");
                                     ui.add(egui::Slider::new(&mut e.buzzer, 0..=100).suffix(" %"));
                                     if ui.button("Set & test").clicked() {
-                                        sends.push(commands::buzzer(Beep::Pulse, e.buzzer));
+                                        sends.push(commands::buzzer_pulse(e.buzzer));
                                         refresh = true;
                                     }
                                 });

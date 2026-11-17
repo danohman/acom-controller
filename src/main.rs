@@ -2,15 +2,15 @@
 
 mod app;
 mod config;
+mod icon;
 mod link;
 mod protocol;
 mod radio;
-mod sound;
-mod tray;
 mod sim;
+mod sound;
 mod state;
-mod icon;
 mod theme;
+mod tray;
 mod update;
 mod widgets;
 

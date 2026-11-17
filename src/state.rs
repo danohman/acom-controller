@@ -10,7 +10,6 @@ pub struct Sample {
     pub t: Instant,
     pub forward_w: f32,
     pub reflected_w: f32,
-    pub drive_w: f32,
     pub swr: f32,
     pub temp_c: f32,
 }
@@ -18,7 +17,6 @@ pub struct Sample {
 #[derive(Debug, Clone)]
 pub struct AlarmEntry {
     pub when: SystemTime,
-    pub code: u8,
     pub text: String,
     pub severity: Severity,
     pub active: bool,
@@ -136,7 +134,6 @@ impl AmpState {
         let Some(text) = errors::text(code) else { return };
         self.alarm_log.push(AlarmEntry {
             when: SystemTime::now(),
-            code,
             text,
             severity: errors::severity(code),
             active,
@@ -171,7 +168,6 @@ impl AmpState {
                 t: now,
                 forward_w: t.forward_w,
                 reflected_w: t.reflected_w,
-                drive_w: t.input_w,
                 swr: if t.forward_w > 5.0 { t.swr } else { 1.0 },
                 temp_c: t.temp1_c(),
             });

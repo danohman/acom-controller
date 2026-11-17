@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[derive(Default)]
 pub struct Shared {
     /// Main window currently shown (false when hidden to the tray).
+    #[cfg(any(windows, target_os = "macos"))]
     pub visible: AtomicBool,
     /// The user chose Quit from the tray menu.
     pub quit: AtomicBool,

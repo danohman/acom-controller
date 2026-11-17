@@ -3,7 +3,7 @@
 use crate::config::{CompactGraph, Config, Connection, PowerPulse, RadioSource};
 use crate::link::{self, Cmd, Event, LinkHandle};
 use crate::protocol::bands::{BANDS, band_by_number, band_for_frequency};
-use crate::protocol::commands::{self, ModeRequest, Select};
+use crate::protocol::commands::{self, ModeRequest};
 use crate::protocol::errors::{self, Severity};
 use crate::protocol::messages::{AmpMode, BAUD_TABLE, addr};
 use crate::radio::{self, RadioEvent, RadioHandle};
@@ -74,11 +74,6 @@ struct SettingsFlags {
     moved: bool,
 }
 
-enum Pending {
-    TurnOff,
-    Restart,
-}
-
 pub struct App {
     cfg: Config,
     link: Option<LinkHandle>,
@@ -101,7 +96,8 @@ pub struct App {
     install_rx: Option<std::sync::mpsc::Receiver<Result<std::path::PathBuf, String>>>,
     update_error: Option<String>,
     show_log: bool,
-    pending: Option<Pending>,
+    /// Waiting for the user to confirm powering the amplifier off.
+    confirm_power_off: bool,
     comm_log: VecDeque<String>,
     toast: Option<(String, Instant)>,
     plot_metric: usize,
@@ -162,7 +158,7 @@ impl App {
             install_rx: None,
             update_error: None,
             show_log: false,
-            pending: None,
+            confirm_power_off: false,
             comm_log: VecDeque::new(),
             toast: None,
             plot_metric: 0,
@@ -316,27 +312,27 @@ impl App {
     }
 
     fn poll_update(&mut self) {
-        if let Some(rx) = &self.install_rx {
-            if let Ok(res) = rx.try_recv() {
-                self.install_rx = None;
-                match res {
-                    Ok(exe) => {
-                        // New version is in place: save settings, start it and quit this copy.
-                        self.cfg.save();
-                        let _ = std::process::Command::new(&exe).spawn();
-                        std::process::exit(0);
-                    }
-                    Err(e) => self.update_error = Some(e),
+        if let Some(rx) = &self.install_rx
+            && let Ok(res) = rx.try_recv()
+        {
+            self.install_rx = None;
+            match res {
+                Ok(exe) => {
+                    // New version is in place: save settings, start it and quit this copy.
+                    self.cfg.save();
+                    let _ = std::process::Command::new(&exe).spawn();
+                    std::process::exit(0);
                 }
+                Err(e) => self.update_error = Some(e),
             }
         }
         let Some(rx) = &self.update_rx else { return };
         if let Ok(st) = rx.try_recv() {
             self.update_rx = None;
-            if let UpdateStatus::Available { version, .. } = &st {
-                if self.update_silent {
-                    self.say(format!("Version {version} is available – see Settings › About"));
-                }
+            if let UpdateStatus::Available { version, .. } = &st
+                && self.update_silent
+            {
+                self.say(format!("Version {version} is available – see Settings › About"));
             }
             self.update_silent = false;
             self.update = st;
@@ -381,11 +377,12 @@ impl App {
                 Event::Notice(t) => self.say(t),
             }
         }
-        if let Some(t) = self.next_retry {
-            if Instant::now() >= t && self.link.is_none() {
-                self.next_retry = None;
-                self.connect(ctx);
-            }
+        if let Some(t) = self.next_retry
+            && Instant::now() >= t
+            && self.link.is_none()
+        {
+            self.next_retry = None;
+            self.connect(ctx);
         }
         self.request_missing_info();
         self.drive_fault_requests();
@@ -447,7 +444,7 @@ impl App {
         let recently = self.last_follow.is_some_and(|t| t.elapsed() < Duration::from_millis(1500));
         if target.number != cur && !tx && !recently {
             self.last_follow = Some(Instant::now());
-            self.send(commands::select(Select::Band(target.number)));
+            self.send(commands::select_band(target.number));
         }
     }
 
@@ -455,10 +452,10 @@ impl App {
     fn sync_tray(&mut self, ctx: &egui::Context) {
         if self.cfg.tray_enabled && self.tray.is_none() {
             self.tray = crate::tray::Tray::new(ctx);
-        } else if !self.cfg.tray_enabled {
-            if let Some(t) = self.tray.take() {
-                crate::tray::set_visible(ctx, &t.shared, true);
-            }
+        } else if !self.cfg.tray_enabled
+            && let Some(t) = self.tray.take()
+        {
+            crate::tray::set_visible(ctx, &t.shared, true);
         }
     }
 
@@ -534,19 +531,17 @@ impl App {
                     }
                 }
             }
-            if let Some(t) = self.amp.telemetry.as_ref().filter(|_| !self.cfg.compact) {
-                if self.amp.alive() {
-                    let (txt, col) = match t.mode {
-                        AmpMode::OperateTx => (t.mode.label(), RED),
-                        AmpMode::OperateRx => (t.mode.label(), GREEN),
-                        AmpMode::Standby => (t.mode.label(), BLUE),
-                        m => (m.label(), AMBER),
-                    };
-                    if t.mode == AmpMode::OperateTx {
-                        widgets::tx_chip(ui, txt);
-                    } else {
-                        widgets::chip(ui, txt, col);
-                    }
+            if let Some(t) = self.amp.telemetry.as_ref().filter(|_| !self.cfg.compact && self.amp.alive()) {
+                let col = match t.mode {
+                    AmpMode::OperateTx => RED,
+                    AmpMode::OperateRx => GREEN,
+                    AmpMode::Standby => BLUE,
+                    _ => AMBER,
+                };
+                if t.mode == AmpMode::OperateTx {
+                    widgets::tx_chip(ui, t.mode.label());
+                } else {
+                    widgets::chip(ui, t.mode.label(), col);
                 }
             }
             if self.clients > 0 {
@@ -567,15 +562,16 @@ impl App {
                 if self.link.is_some() && self.amp.alive() {
                     if ui.button(RichText::new("Power off").color(RED)).clicked() {
                         if self.cfg.confirm_dangerous {
-                            self.pending = Some(Pending::TurnOff);
+                            self.confirm_power_off = true;
                         } else {
                             self.send(commands::set_mode(ModeRequest::TurnOff));
                         }
                     }
-                } else if self.cfg.power_on_enabled && self.cfg.connection == Connection::Serial {
-                    if ui.button("Power on").on_hover_text("Pulse the RS-232 control line configured in Settings").clicked() {
-                        self.send_power_pulse(ctx);
-                    }
+                } else if self.cfg.power_on_enabled
+                    && self.cfg.connection == Connection::Serial
+                    && ui.button("Power on").on_hover_text("Pulse the RS-232 control line configured in Settings").clicked()
+                {
+                    self.send_power_pulse(ctx);
                 }
                 right_start = ui.min_rect().left();
             });
@@ -728,7 +724,6 @@ impl App {
                 );
             });
         });
-        let _ = model;
     }
 
     fn controls(&mut self, ui: &mut egui::Ui) {
@@ -778,16 +773,15 @@ impl App {
                     ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
                     for b in BANDS.iter().filter(|b| b.number <= max) {
                         let sel = Some(b.number) == cur_band;
-                        let mut txt = RichText::new(b.name.replace(' ', "")).size(13.0);
-                        let mut btn = egui::Button::new(egui::RichText::new("")).min_size(egui::vec2(52.0, 28.0));
-                        if sel {
-                            txt = txt.strong().color(egui::Color32::BLACK);
-                            btn = egui::Button::new(txt).min_size(egui::vec2(52.0, 28.0)).fill(GREEN);
+                        let txt = RichText::new(b.name.replace(' ', "")).size(13.0);
+                        let btn = if sel {
+                            egui::Button::new(txt.strong().color(Color32::BLACK)).fill(GREEN)
                         } else {
-                            btn = egui::Button::new(txt).min_size(egui::vec2(52.0, 28.0));
+                            egui::Button::new(txt)
                         }
+                        .min_size(egui::vec2(52.0, 28.0));
                         if ui.add(btn).clicked() {
-                            self.send(commands::select(Select::Band(b.number)));
+                            self.send(commands::select_band(b.number));
                         }
                     }
                 });
@@ -852,10 +846,11 @@ impl App {
             let mut any = false;
             let active: Vec<u8> = {
                 let mut v = self.amp.active_codes.clone();
-                if let Some(t) = &self.amp.telemetry {
-                    if t.alarm_code != 0 && !v.contains(&t.alarm_code) {
-                        v.push(t.alarm_code);
-                    }
+                if let Some(t) = &self.amp.telemetry
+                    && t.alarm_code != 0
+                    && !v.contains(&t.alarm_code)
+                {
+                    v.push(t.alarm_code);
                 }
                 v
             };
@@ -1163,7 +1158,7 @@ impl App {
             if ui.ctx().input(|i| i.viewport().close_requested() || i.key_pressed(egui::Key::Escape)) {
                 close = true;
             }
-            egui::CentralPanel::default().show_inside(ui, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 for k in CompactGraph::ALL {
                     let btn = egui::Button::new(k.label()).selected(kinds[slot] == k).min_size(egui::vec2(ui.available_width(), 22.0));
                     if ui.add(btn).clicked() {
@@ -1224,7 +1219,7 @@ impl App {
                     f.moved = true; // persisted when the window closes
                 }
             }
-            egui::Panel::left("settings_nav").resizable(false).exact_size(160.0).show_inside(ui, |ui| {
+            egui::Panel::left("settings_nav").resizable(false).exact_size(160.0).show(ui, |ui| {
                 ui.add_space(8.0);
                 for tab in SettingsTab::ALL {
                     let sel = self.settings_tab == tab;
@@ -1237,7 +1232,7 @@ impl App {
                     }
                 }
             });
-            egui::CentralPanel::default().show_inside(ui, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     ui.add_space(4.0);
                     ui.heading(self.settings_tab.label());
@@ -1597,14 +1592,12 @@ impl App {
     }
 
     fn confirmations(&mut self, ctx: &egui::Context) {
-        let Some(p) = &self.pending else { return };
-        let (title, body) = match p {
-            Pending::TurnOff => ("Power off amplifier?", "The amplifier will shut down. Remote power-on may not be available."),
-            Pending::Restart => ("Restart amplifier?", "The amplifier will reboot and re-initialise."),
-        };
+        if !self.confirm_power_off {
+            return;
+        }
         let mut result = None;
-        egui::Window::new(title).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-            ui.label(body);
+        egui::Window::new("Power off amplifier?").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+            ui.label("The amplifier will shut down. Remote power-on may not be available.");
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 if ui.button("Confirm").clicked() {
@@ -1616,13 +1609,9 @@ impl App {
             });
         });
         if let Some(ok) = result {
-            let p = self.pending.take();
+            self.confirm_power_off = false;
             if ok {
-                match p {
-                    Some(Pending::TurnOff) => self.send(commands::set_mode(ModeRequest::TurnOff)),
-                    Some(Pending::Restart) => self.send(commands::set_mode(ModeRequest::Restart)),
-                    None => {}
-                }
+                self.send(commands::set_mode(ModeRequest::TurnOff));
             }
         }
     }
@@ -1649,8 +1638,6 @@ impl App {
     }
 }
 
-/// Elapsed seconds as years, months, days, hours and minutes (365-day years, 30-day months),
-/// leaving out leading zero units, e.g. "11 months 20 days 4 hours 14 mins".
 /// Clamp a window of `size` points at `pos` (points) into the work area of the monitor holding its centre.
 /// Windows only; elsewhere the position is returned unchanged.
 fn clamp_to_monitor(pos: egui::Pos2, size: egui::Vec2, ppp: f32) -> egui::Pos2 {
@@ -1711,6 +1698,8 @@ fn centered_on_main(ctx: &egui::Context, builder: egui::ViewportBuilder, size: [
     }
 }
 
+/// Elapsed seconds as years, months, days, hours and minutes (365-day years, 30-day months),
+/// leaving out leading zero units, e.g. "11 months 20 days 4 hours 14 mins".
 fn fmt_online(secs: u64) -> String {
     let mins = secs / 60;
     let (years, rest) = (mins / (365 * 1440), mins % (365 * 1440));
@@ -1749,14 +1738,14 @@ impl eframe::App for App {
 
         // Compact mode has no top bar; its settings button lives in the status strip.
         if !self.cfg.compact {
-            egui::Panel::top("top").show_inside(ui, |ui| {
+            egui::Panel::top("top").show(ui, |ui| {
                 ui.add_space(6.0);
                 self.top_bar(ui, &ctx);
                 ui.add_space(6.0);
             });
         }
         if self.show_log {
-            egui::Panel::bottom("log").resizable(true).default_size(120.0).show_inside(ui, |ui| {
+            egui::Panel::bottom("log").resizable(true).default_size(120.0).show(ui, |ui| {
                 egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
                     for l in &self.comm_log {
                         ui.label(RichText::new(l).monospace().size(11.5).color(MUTED));
@@ -1765,7 +1754,7 @@ impl eframe::App for App {
             });
         }
         let mut fit_height = None;
-        egui::CentralPanel::default().show_inside(ui, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             if self.cfg.compact {
                 self.compact_view(ui);
                 // Content starts at the top margin; shrink the window to match, no dead space below.
@@ -1786,15 +1775,13 @@ impl eframe::App for App {
                 });
             });
         });
-        if let Some(h) = fit_height.filter(|_| !self.show_log) {
-            let cur = ctx.input(|i| i.viewport().inner_rect.map(|r| r.size()));
-            if let Some(cur) = cur {
-                if (cur.y - h).abs() > 1.5 {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(egui::vec2(420.0, h)));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(cur.x, h)));
-                    keep_on_screen(&ctx, egui::vec2(cur.x, h), None);
-                }
-            }
+        if let Some(h) = fit_height.filter(|_| !self.show_log)
+            && let Some(cur) = ctx.input(|i| i.viewport().inner_rect.map(|r| r.size()))
+            && (cur.y - h).abs() > 1.5
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(egui::vec2(420.0, h)));
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(cur.x, h)));
+            keep_on_screen(&ctx, egui::vec2(cur.x, h), None);
         }
         self.settings_window(&ctx);
         self.fault_window(&ctx);
@@ -1803,7 +1790,7 @@ impl eframe::App for App {
         self.tray_housekeeping(&ctx);
         if let Some((msg, at)) = &self.toast {
             if at.elapsed() < Duration::from_secs(3) {
-                egui::Area::new(egui::Id::new("toast")).anchor(egui::Align2::CENTER_BOTTOM, [0.0, -16.0]).show(&ctx, |ui| {
+                egui::Area::new(egui::Id::unique("toast")).anchor(egui::Align2::CENTER_BOTTOM, [0.0, -16.0]).show(&ctx, |ui| {
                     egui::Frame::popup(ui.style()).show(ui, |ui| ui.label(msg));
                 });
             } else {

@@ -8,7 +8,7 @@ A modern, single-executable Windows controller for ACOM solid-state amplifiers
 It talks to the amplifier over its RS-232 interface using the protocol described in
 `doc/ACOM_RS_232_Serial_Protocol_Description_for_Solid-State_Amplifiers_GB_01_2026.pdf`.
 
-> Status: version 1.0.3. Runs in built-in demo mode and has been exercised on an ACOM 1200S (connect, telemetry, remote power on/off). Other models are untested. See [Roadmap](#roadmap).
+> Status: runs in built-in demo mode and has been exercised on an ACOM 1200S (connect, telemetry, remote power on/off). Other models are untested. See [Roadmap](#roadmap).
 
 ## Screenshots
 
@@ -104,6 +104,10 @@ Notes:
   switch the amplifier band automatically.
 - **Remote operation** – share the amplifier's serial port over TCP and control it from another PC.
 - **Alerts** – synthesised sound alerts for warnings/faults, high SWR and link loss; optional tray icon.
+- **Amplifier settings and diagnostics** – edit the amplifier's operation flags, buzzer volume, CAT interface and user
+  text, and read back its hard-fault records (the 1200S answers only some record requests, so loading can be partial).
+- **Self-updating** – checks GitHub for a newer release at startup (can be turned off); on Windows the *Upgrade*
+  button downloads the new exe and restarts. Only api.github.com and this project's release downloads are contacted.
 - **Demo mode** – built-in amplifier simulator, so the UI can be explored without hardware.
 
 ## Build
@@ -114,6 +118,7 @@ self-contained exe.
 
 ```powershell
 cargo test              # unit tests
+cargo clippy            # lints (the code builds warning-free)
 cargo run               # debug build
 cargo build --release   # target\release\acom-controller.exe
 ```
@@ -122,8 +127,11 @@ cargo build --release   # target\release\acom-controller.exe
 
 | Path | Purpose |
 | --- | --- |
-| `src/protocol/` | Framing, message decoding, command builders, alarm catalogue (no I/O) |
-| `src/` (other) | Config, serial/TCP link, simulator, radio integrations, update check, UI |
+| `src/protocol/` | Framing, message decoding, command builders, alarm catalogue, band plan (no I/O) |
+| `src/link.rs`, `src/sim.rs` | I/O worker thread (serial, TCP, demo) with write pacing, auto-acknowledge and optional TCP sharing; protocol-speaking simulator |
+| `src/radio.rs`, `src/update.rs` | Frequency sources (N1MM+, rigctld, shared memory); GitHub update check and installer |
+| `src/app.rs`, `src/app/`, `src/widgets.rs`, `src/theme.rs` | egui user interface |
+| `src/state.rs`, `src/config.rs`, `src/sound.rs`, `src/tray.rs`, `src/icon.rs` | Aggregated amplifier state, JSON settings, alert tones, tray icon, embedded icon |
 | `assets/` | Icon and README screenshots |
 | `doc/` | Manufacturer protocol documentation |
 

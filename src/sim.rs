@@ -85,7 +85,6 @@ impl Simulator {
         let dissip = fwd * 0.45;
         let target_t = 28.0 + dissip * 0.07;
         self.temp_c += (target_t - self.temp_c) * 0.03;
-        let powered = self.mode != 5 || true;
         let mut t = Telemetry {
             mode_byte: self.mode << 4,
             flags1: if operate { (1 << 12) | (1 << 9) } else { 0 },
@@ -118,7 +117,6 @@ impl Simulator {
         if fault {
             t.alarm_code = 0x0D; // PA LOAD SWR TOO HIGH
         }
-        let _ = powered;
         t
     }
 
@@ -139,12 +137,8 @@ impl Simulator {
                 _ => {}
             },
             0x09 => {
-                let max = BANDS.len() as u8 - 1;
-                match p2 {
-                    0x8F => self.band = p1.clamp(1, max),
-                    0x80 => self.band = if self.band >= max { 1 } else { self.band + 1 },
-                    0x40 => self.band = if self.band <= 1 { max } else { self.band - 1 },
-                    _ => {}
+                if p2 == 0x8F {
+                    self.band = p1.clamp(1, BANDS.len() as u8 - 1);
                 }
                 self.reply_message(addr::BAND_INFO);
             }
