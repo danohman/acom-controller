@@ -127,6 +127,8 @@ pub struct App {
     edit: Option<amp_windows::AmpEdit>,
     /// Window-position memory: frames to ignore after a programmatic move, startup flag, last change.
     pos_skip: u8,
+    /// Where the settings window was opened; fixed while open so it is not re-placed every frame.
+    settings_start: Option<egui::Pos2>,
     pos_init: bool,
     pos_changed: Option<Instant>,
 }
@@ -179,6 +181,7 @@ impl App {
             hf_step: 0,
             hf_base: (0, 0),
             pos_skip: 0,
+            settings_start: None,
             pos_init: false,
             pos_changed: None,
             show_amp_settings: false,
@@ -1060,9 +1063,9 @@ impl App {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let tip = if t.mode.is_operate() { "Switch to standby" } else { "Switch to operate" };
                     let (fill, txt) = if t.mode.is_operate() {
-                        (GREEN, "OPR")
+                        (GREEN, "OPERATE")
                     } else {
-                        (Color32::from_rgb(255, 140, 0), "STB")
+                        (Color32::from_rgb(255, 140, 0), "STANDBY")
                     };
                     let btn = egui::Button::new(RichText::new(txt).strong().color(Color32::BLACK)).fill(fill);
                     if ui.add(btn).on_hover_text(tip).clicked() {
@@ -1077,7 +1080,7 @@ impl App {
         let (mode_txt, mode_col) = match t.mode {
             AmpMode::OperateTx => ("TX", RED),
             AmpMode::OperateRx => ("RX", GREEN),
-            AmpMode::Standby => ("STB", Color32::from_rgb(255, 140, 0)),
+            AmpMode::Standby => ("STANDBY", Color32::from_rgb(255, 140, 0)),
             m => (m.label(), AMBER),
         };
         let swr = t.swr.max(1.0);
@@ -1108,6 +1111,7 @@ impl App {
 
     fn settings_window(&mut self, ctx: &egui::Context) {
         if !self.show_settings {
+            self.settings_start = None;
             if self.settings_dirty {
                 self.settings_dirty = false;
                 self.cfg.save();
@@ -1122,10 +1126,11 @@ impl App {
             .with_icon(crate::icon::window_icon())
             .with_inner_size([760.0, 580.0])
             .with_min_inner_size([620.0, 420.0]);
-        let builder = match self.cfg.pos_settings {
-            Some(p) => builder.with_position(clamp_to_monitor(egui::pos2(p[0], p[1]), egui::vec2(760.0, 580.0), ctx.pixels_per_point())),
-            None => centered_on_main(ctx, builder, [760.0, 580.0]),
-        };
+        let start = *self.settings_start.get_or_insert_with(|| match self.cfg.pos_settings {
+            Some(p) => clamp_to_monitor(egui::pos2(p[0], p[1]), egui::vec2(760.0, 580.0), ctx.pixels_per_point()),
+            None => centered_pos(ctx, [760.0, 580.0]).unwrap_or(egui::pos2(100.0, 100.0)),
+        });
+        let builder = builder.with_position(start);
         ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("settings_viewport"), builder, |ui, _class| {
             if ui.ctx().input(|i| i.viewport().close_requested()) {
                 open = false;
@@ -1605,13 +1610,16 @@ fn keep_on_screen(ctx: &egui::Context, inner: egui::Vec2, target: Option<egui::P
     }
 }
 
+/// Top-left that centres a window of `size` over the main window.
+fn centered_pos(ctx: &egui::Context, size: [f32; 2]) -> Option<egui::Pos2> {
+    let c = ctx.input(|i| i.viewport().outer_rect)?.center();
+    Some(egui::pos2(c.x - size[0] / 2.0, c.y - size[1] / 2.0))
+}
+
 /// Place a child window centred over the main window so it opens on the same monitor.
 fn centered_on_main(ctx: &egui::Context, builder: egui::ViewportBuilder, size: [f32; 2]) -> egui::ViewportBuilder {
-    match ctx.input(|i| i.viewport().outer_rect) {
-        Some(r) => {
-            let c = r.center();
-            builder.with_position(egui::pos2(c.x - size[0] / 2.0, c.y - size[1] / 2.0))
-        }
+    match centered_pos(ctx, size) {
+        Some(p) => builder.with_position(p),
         None => builder,
     }
 }

@@ -89,7 +89,8 @@ impl Meter<'_> {
                     se: if b >= 1.0 { 3 } else { 0 },
                 };
                 let seg = Rect::from_min_max(Pos2::new(x_at(a), bar.top()), Pos2::new(x_at(b), bar.bottom()));
-                p.rect_filled(seg, seg_r, track.lerp_to_gamma(col, 0.22));
+                let dim = if vis.dark_mode { 0.22 } else { 0.10 };
+                p.rect_filled(seg, seg_r, track.lerp_to_gamma(col, dim));
                 if f > a {
                     let part = Rect::from_min_max(seg.min, Pos2::new(x_at(f.min(b)), bar.bottom()));
                     p.rect_filled(part, seg_r, col);
@@ -134,18 +135,19 @@ pub fn chip(ui: &mut egui::Ui, text: &str, color: Color32) {
     ui.painter().galley(rect.center() - galley.size() / 2.0, galley, color);
 }
 
-/// Bright solid-red "transmitting" pill. The fill and text colours do not depend on the theme,
-/// so it stays readable in both light and dark mode.
+/// Bright solid-red "transmitting" pill; the fill is theme-independent, the text flips with the theme.
 pub fn tx_chip(ui: &mut egui::Ui, text: &str) {
     const FILL: Color32 = Color32::from_rgb(255, 30, 30);
-    let galley = ui.painter().layout_no_wrap(text.to_owned(), FontId::proportional(13.0), Color32::BLACK);
+    // White text in dark mode, black in light mode.
+    let fg = if ui.visuals().dark_mode { Color32::WHITE } else { Color32::BLACK };
+    let galley = ui.painter().layout_no_wrap(text.to_owned(), FontId::proportional(13.0), fg);
     let size = galley.size() + Vec2::new(18.0, 8.0);
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
     ui.painter().rect_filled(rect, CornerRadius::same(255), FILL);
-    ui.painter().galley(rect.center() - galley.size() / 2.0, galley, Color32::BLACK);
+    ui.painter().galley(rect.center() - galley.size() / 2.0, galley, fg);
     // Faux-bold: draw the text a second time half a pixel over.
-    let galley = ui.painter().layout_no_wrap(text.to_owned(), FontId::proportional(13.0), Color32::BLACK);
-    ui.painter().galley(rect.center() - galley.size() / 2.0 + Vec2::new(0.5, 0.0), galley, Color32::BLACK);
+    let galley = ui.painter().layout_no_wrap(text.to_owned(), FontId::proportional(13.0), fg);
+    ui.painter().galley(rect.center() - galley.size() / 2.0 + Vec2::new(0.5, 0.0), galley, fg);
 }
 
 /// Titled card container.
