@@ -130,7 +130,7 @@ dependencies = [
 
 [[package]]
 name = "acom-controller"
-version = "1.0.1-beta"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
