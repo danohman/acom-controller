@@ -1043,12 +1043,28 @@ impl App {
             let row = egui::Rect::from_min_max(egui::pos2(full.left() + 120.0, meter_top - 1.0), egui::pos2(full.right() - 80.0, meter_top + 19.0));
             self.update_banner(ui, row, full.center().x);
         }
+        let show_swr = self.cfg.compact_show_swr;
+        let swr_alert = self.cfg.swr_alert;
+        let mut toggled = false;
         ui.columns(2, |cols| {
             Meter { label: "PA TEMPERATURE", value: temp_c, min: 20.0, max: 100.0, text: self.fmt_temp(temp_c),
                 zones: Zones { warn: 70.0, crit: 85.0 }, peak: None, height: 34.0 }.show(&mut cols[0]);
-            Meter { label: "REFLECTED POWER", value: t.reflected_w, min: 0.0, max: fs * 0.2, text: format!("{:.0} W", t.reflected_w),
-                zones: Zones { warn: fs * 0.03, crit: fs * 0.08 }, peak: None, height: 34.0 }.show(&mut cols[1]);
+            let resp = if show_swr {
+                Meter { label: "SWR", value: t.swr.max(1.0), min: 1.0, max: 4.0, text: format!("{:.2}", t.swr.max(1.0)),
+                    zones: Zones { warn: swr_alert, crit: 3.0 }, peak: None, height: 34.0 }.show(&mut cols[1])
+            } else {
+                Meter { label: "REFLECTED POWER", value: t.reflected_w, min: 0.0, max: fs * 0.2, text: format!("{:.0} W", t.reflected_w),
+                    zones: Zones { warn: fs * 0.03, crit: fs * 0.08 }, peak: None, height: 34.0 }.show(&mut cols[1])
+            };
+            let tip = if show_swr { "Click to show reflected power" } else { "Click to show SWR" };
+            if resp.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                toggled = true;
+            }
         });
+        if toggled {
+            self.cfg.compact_show_swr = !self.cfg.compact_show_swr;
+            self.cfg.save();
+        }
 
         // Band range and quick controls.
         let (lo, hi) = match (&self.amp.band, band) {
@@ -1103,8 +1119,13 @@ impl App {
                 ui.label(RichText::new(format!("{:.1} W", t.input_w)).monospace().strong());
                 ui.label(RichText::new("DRIVE").size(11.5).color(MUTED));
                 ui.add_space(6.0);
-                ui.label(RichText::new(format!("{swr:.2}")).monospace().strong().color(swr_col));
-                ui.label(RichText::new("SWR").size(11.5).color(MUTED));
+                if show_swr {
+                    ui.label(RichText::new(format!("{:.0} W", t.reflected_w)).monospace().strong());
+                    ui.label(RichText::new("REF_PWR").size(11.5).color(MUTED));
+                } else {
+                    ui.label(RichText::new(format!("{swr:.2}")).monospace().strong().color(swr_col));
+                    ui.label(RichText::new("SWR").size(11.5).color(MUTED));
+                }
             });
         });
     }

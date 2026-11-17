@@ -31,9 +31,9 @@ pub struct Meter<'a> {
 }
 
 impl Meter<'_> {
-    pub fn show(self, ui: &mut egui::Ui) {
+    pub fn show(self, ui: &mut egui::Ui) -> egui::Response {
         let width = ui.available_width();
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(width, self.height), Sense::hover());
+        let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, self.height), Sense::click());
         let p = ui.painter_at(rect);
         let vis = ui.visuals();
         let track = vis.extreme_bg_color;
@@ -111,6 +111,7 @@ impl Meter<'_> {
                 fg,
             );
         }
+        resp
     }
 }
 

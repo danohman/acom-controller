@@ -68,6 +68,8 @@ pub struct Config {
     pub ui_scale: f32,
     /// Slim single-column layout.
     pub compact: bool,
+    /// Compact layout: the right-hand meter shows SWR instead of reflected power (and the strip shows REF_PWR).
+    pub compact_show_swr: bool,
     /// Last outer window positions (points): compact main window, full main window, settings window.
     pub pos_compact: Option<[f32; 2]>,
     pub pos_full: Option<[f32; 2]>,
@@ -115,6 +117,7 @@ impl Default for Config {
             confirm_dangerous: true,
             ui_scale: 1.0,
             compact: false,
+            compact_show_swr: false,
             pos_compact: None,
             pos_full: None,
             pos_settings: None,
