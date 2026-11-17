@@ -134,6 +134,20 @@ pub fn chip(ui: &mut egui::Ui, text: &str, color: Color32) {
     ui.painter().galley(rect.center() - galley.size() / 2.0, galley, color);
 }
 
+/// Bright solid-red "transmitting" pill. The fill and text colours do not depend on the theme,
+/// so it stays readable in both light and dark mode.
+pub fn tx_chip(ui: &mut egui::Ui, text: &str) {
+    const FILL: Color32 = Color32::from_rgb(255, 30, 30);
+    let galley = ui.painter().layout_no_wrap(text.to_owned(), FontId::proportional(13.0), Color32::BLACK);
+    let size = galley.size() + Vec2::new(18.0, 8.0);
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    ui.painter().rect_filled(rect, CornerRadius::same(255), FILL);
+    ui.painter().galley(rect.center() - galley.size() / 2.0, galley, Color32::BLACK);
+    // Faux-bold: draw the text a second time half a pixel over.
+    let galley = ui.painter().layout_no_wrap(text.to_owned(), FontId::proportional(13.0), Color32::BLACK);
+    ui.painter().galley(rect.center() - galley.size() / 2.0 + Vec2::new(0.5, 0.0), galley, Color32::BLACK);
+}
+
 /// Titled card container.
 pub fn card<R>(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     egui::Frame::group(ui.style())

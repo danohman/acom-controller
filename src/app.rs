@@ -528,7 +528,11 @@ impl App {
                         AmpMode::Standby => (t.mode.label(), BLUE),
                         m => (m.label(), AMBER),
                     };
-                    widgets::chip(ui, txt, col);
+                    if t.mode == AmpMode::OperateTx {
+                        widgets::tx_chip(ui, txt);
+                    } else {
+                        widgets::chip(ui, txt, col);
+                    }
                 }
             }
             if self.clients > 0 {
@@ -1034,7 +1038,11 @@ impl App {
         let swr = t.swr.max(1.0);
         let swr_col = if swr >= 3.0 { RED } else if swr >= self.cfg.swr_alert { AMBER } else { GREEN };
         ui.horizontal(|ui| {
-            widgets::chip(ui, mode_txt, mode_col);
+            if t.mode == AmpMode::OperateTx {
+                widgets::tx_chip(ui, mode_txt);
+            } else {
+                widgets::chip(ui, mode_txt, mode_col);
+            }
             match alarm.and_then(|c| errors::text(c).map(|x| (c, x))) {
                 Some((c, text)) => ui.label(RichText::new(format!("⚠ {text}")).color(sev_color(errors::severity(c))).size(12.5)),
                 None => ui.label(RichText::new("AMPLIFIER NORMAL").color(GREEN).strong().size(12.5)),
