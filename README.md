@@ -8,7 +8,7 @@ A modern, single-executable Windows controller for ACOM solid-state amplifiers
 It talks to the amplifier over its RS-232 interface using the protocol described in
 `doc/ACOM_RS_232_Serial_Protocol_Description_for_Solid-State_Amplifiers_GB_01_2026.pdf`.
 
-> Status: version 1.0.0. Runs in built-in demo mode and has been exercised on an ACOM 1200S (connect, telemetry, remote power on/off). Other models are untested. See [Roadmap](#roadmap).
+> Status: version 1.0.1. Runs in built-in demo mode and has been exercised on an ACOM 1200S (connect, telemetry, remote power on/off). Other models are untested. See [Roadmap](#roadmap).
 
 ## Screenshots
 
