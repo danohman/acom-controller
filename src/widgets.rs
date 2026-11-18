@@ -17,6 +17,11 @@ pub struct Zones {
 
 impl Zones {
     pub const NONE: Zones = Zones { warn: f32::INFINITY, crit: f32::INFINITY };
+
+    /// Two zones only: green below `red`, red from `red` upward (no amber band).
+    pub const fn green_red(red: f32) -> Zones {
+        Zones { warn: red, crit: red }
+    }
 }
 
 pub struct Meter<'a> {
@@ -43,22 +48,23 @@ impl Meter<'_> {
         // Label and value share one text row (vertically centred), with the bar below it.
         let row_y = rect.top() + 9.0;
         p.text(Pos2::new(rect.left() + 2.0, row_y), Align2::LEFT_CENTER, self.label, FontId::proportional(12.0), vis.strong_text_color());
-        p.text(Pos2::new(rect.right() - 2.0, row_y), Align2::RIGHT_CENTER, &self.text, FontId::monospace(14.0), vis.strong_text_color());
         let bar = Rect::from_min_max(
             Pos2::new(rect.left(), rect.bottom() - 14.0),
             Pos2::new(rect.right(), rect.bottom() - 2.0),
         );
         let frac = |v: f32| ((v - self.min) / (self.max - self.min)).clamp(0.0, 1.0);
-        // Rises are instant; falls decay smoothly (about a quarter second to settle).
+        // Rises are instant; falls drop at a constant linear rate (1000 units/s, i.e. 10 units
+        // per 10 ms) until the new value is reached, so the bar sweeps down steadily.
         let id = ui.scope_id().with(("meter", self.label));
         let target = frac(self.value);
         let shown = ui.ctx().data(|d| d.get_temp::<f32>(id)).unwrap_or(target);
         let f = if target >= shown {
             target
         } else {
-            let dt = ui.input(|i| i.stable_dt).min(0.1);
-            let next = target + (shown - target) * (-dt / 0.06).exp();
-            if (next - target).abs() > 0.002 {
+            let dt = ui.input(|i| i.unstable_dt).min(0.1);
+            let step = 1000.0 * dt / (self.max - self.min);
+            let next = shown - step;
+            if next > target {
                 ui.ctx().request_repaint();
                 next
             } else {
@@ -66,6 +72,22 @@ impl Meter<'_> {
             }
         };
         ui.ctx().data_mut(|d| d.insert_temp(id, f));
+        // Power meters (readouts in W): the number only updates when a reading rises above the
+        // decaying bar, or when the reading returns to zero, so it holds the last high value
+        // while the bar falls.
+        let text = if self.text.ends_with(" W") {
+            let tid = id.with("text");
+            let held = ui.ctx().data(|d| d.get_temp::<String>(tid));
+            let t = match held {
+                Some(h) if target <= shown && self.value > self.min => h,
+                _ => self.text.clone(),
+            };
+            ui.ctx().data_mut(|d| d.insert_temp(tid, t.clone()));
+            t
+        } else {
+            self.text.clone()
+        };
+        p.text(Pos2::new(rect.right() - 2.0, row_y), Align2::RIGHT_CENTER, &text, FontId::monospace(14.0), vis.strong_text_color());
         let x_at = |fr: f32| bar.left() + fr * bar.width();
         if self.zones.warn.is_infinite() {
             p.rect_filled(bar, r, track);

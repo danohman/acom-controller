@@ -180,27 +180,26 @@ impl AmpModel {
         if self == Self::Acom500S { 12 } else { 11 }
     }
 
-    /// Nominal full-scale forward power for meter ranges, in watts.
-    pub fn full_scale_w(self) -> f32 {
+    /// Forward power meter `(full scale, red level)` in watts.
+    pub fn forward_meter_w(self) -> (f32, f32) {
         match self {
-            Self::Acom600S | Self::Acom600SNewLpf | Self::Acom700S => 700.0,
-            Self::Acom500S => 600.0,
-            Self::Acom1200S | Self::Acom1400S => 1500.0,
-            Self::Acom2020S => 2200.0,
-            Self::Unknown(_) => 1500.0,
+            Self::Acom600S | Self::Acom600SNewLpf => (700.0, 600.0),
+            Self::Acom700S => (800.0, 680.0),
+            Self::Acom500S => (600.0, 500.0),
+            Self::Acom1400S => (1400.0, 1200.0),
+            Self::Acom2020S => (2000.0, 1800.0),
+            Self::Acom1200S | Self::Unknown(_) => (1200.0, 1000.0),
         }
     }
 
-    /// Rated (nominal) output power in watts, taken from the model number.
-    pub fn rated_w(self) -> f32 {
+    /// Reflected power meter `(full scale, red level)` in watts.
+    pub fn reflected_meter_w(self) -> (f32, f32) {
         match self {
-            Self::Acom600S | Self::Acom600SNewLpf => 600.0,
-            Self::Acom700S => 700.0,
-            Self::Acom500S => 500.0,
-            Self::Acom1200S => 1200.0,
-            Self::Acom1400S => 1400.0,
-            Self::Acom2020S => 2000.0,
-            Self::Unknown(_) => 1200.0,
+            Self::Acom600S | Self::Acom600SNewLpf => (150.0, 114.0),
+            Self::Acom700S => (170.0, 130.0),
+            Self::Acom500S => (100.0, 76.0),
+            Self::Acom2020S => (300.0, 228.0),
+            Self::Acom1200S | Self::Acom1400S | Self::Unknown(_) => (250.0, 190.0),
         }
     }
 

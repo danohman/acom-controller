@@ -611,7 +611,8 @@ impl App {
             });
             return;
         };
-        let fs = model.full_scale_w();
+        let (fwd_max, fwd_red) = model.forward_meter_w();
+        let (refl_max, refl_red) = model.reflected_meter_w();
         let pk_on = self.cfg.peak_hold;
         let h = move |secs: f32| pk_on.then(|| std::time::Duration::from_secs_f32(secs));
         widgets::card(ui, "RF power", |ui| {
@@ -630,9 +631,9 @@ impl App {
                 label: "Forward power",
                 value: t.forward_w,
                 min: 0.0,
-                max: fs,
+                max: fwd_max,
                 text: format!("{:.0} W", t.forward_w),
-                zones: Zones { warn: model.rated_w() * 0.80, crit: model.rated_w() },
+                zones: Zones::green_red(fwd_red),
                 peak: h(2.5),
                 height: 40.0,
             }
@@ -641,9 +642,9 @@ impl App {
                 label: "Reflected power",
                 value: t.reflected_w,
                 min: 0.0,
-                max: fs * 0.2,
+                max: refl_max,
                 text: format!("{:.0} W", t.reflected_w),
-                zones: Zones { warn: fs * 0.03, crit: fs * 0.08 },
+                zones: Zones::green_red(refl_red),
                 peak: h(2.5),
                 height: 40.0,
             }
@@ -677,10 +678,10 @@ impl App {
             Meter {
                 label: "PA temperature",
                 value: temp,
-                min: 20.0,
+                min: 0.0,
                 max: 100.0,
                 text: self.fmt_temp(temp),
-                zones: Zones { warn: 60.0, crit: 80.0 },
+                zones: Zones::green_red(76.0),
                 peak: h(60.0),
                 height: 40.0,
             }
@@ -1029,7 +1030,8 @@ impl App {
             });
             return;
         };
-        let fs = self.amp.model().full_scale_w();
+        let (fwd_max, fwd_red) = self.amp.model().forward_meter_w();
+        let (refl_max, refl_red) = self.amp.model().reflected_meter_w();
         let band = self.amp.current_band().and_then(band_by_number);
         let pk_on = self.cfg.peak_hold;
         let h = move |secs: f32| pk_on.then(|| std::time::Duration::from_secs_f32(secs));
@@ -1037,20 +1039,19 @@ impl App {
         ui.spacing_mut().item_spacing = egui::vec2(6.0, 3.0);
 
         let kinds = self.cfg.compact_graph_slots;
-        let rated = self.amp.model().rated_w();
         let temp_txt = self.fmt_temp(temp_c);
         let swr_alert = self.cfg.swr_alert;
         let mut open_menu = None;
         let mut slot_meter = |ui: &mut egui::Ui, slot: usize| {
             let m = match kinds[slot] {
-                CompactGraph::Forward => Meter { label: "FORWARD POWER", value: t.forward_w, min: 0.0, max: fs, text: format!("{:.0} W", t.forward_w),
-                    zones: Zones { warn: rated * 0.80, crit: rated }, peak: h(2.5), height: 34.0 },
-                CompactGraph::Reflected => Meter { label: "REFLECTED POWER", value: t.reflected_w, min: 0.0, max: fs * 0.2, text: format!("{:.0} W", t.reflected_w),
-                    zones: Zones { warn: fs * 0.03, crit: fs * 0.08 }, peak: h(2.5), height: 34.0 },
+                CompactGraph::Forward => Meter { label: "FORWARD POWER", value: t.forward_w, min: 0.0, max: fwd_max, text: format!("{:.0} W", t.forward_w),
+                    zones: Zones::green_red(fwd_red), peak: h(2.5), height: 34.0 },
+                CompactGraph::Reflected => Meter { label: "REFLECTED POWER", value: t.reflected_w, min: 0.0, max: refl_max, text: format!("{:.0} W", t.reflected_w),
+                    zones: Zones::green_red(refl_red), peak: h(2.5), height: 34.0 },
                 CompactGraph::Swr => Meter { label: "SWR", value: t.swr.max(1.0), min: 1.0, max: 4.0, text: format!("{:.2}", t.swr.max(1.0)),
                     zones: Zones { warn: swr_alert, crit: 3.0 }, peak: h(2.5), height: 34.0 },
-                CompactGraph::Temp => Meter { label: "PA TEMPERATURE", value: temp_c, min: 20.0, max: 100.0, text: temp_txt.clone(),
-                    zones: Zones { warn: 70.0, crit: 85.0 }, peak: h(60.0), height: 34.0 },
+                CompactGraph::Temp => Meter { label: "PA TEMPERATURE", value: temp_c, min: 0.0, max: 100.0, text: temp_txt.clone(),
+                    zones: Zones::green_red(76.0), peak: h(60.0), height: 34.0 },
                 CompactGraph::Drive => Meter { label: "DRIVE POWER", value: t.input_w, min: 0.0, max: 100.0, text: format!("{:.1} W", t.input_w),
                     zones: Zones { warn: 70.0, crit: 90.0 }, peak: h(2.5), height: 34.0 },
                 CompactGraph::DrainCurrent => Meter { label: "PA DRAIN CURRENT", value: t.id1_a, min: 0.0, max: 60.0, text: format!("{:.1} A", t.id1_a),
