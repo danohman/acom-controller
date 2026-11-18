@@ -8,6 +8,36 @@ pub const RED: Color32 = Color32::from_rgb(255, 92, 92);
 pub const BLUE: Color32 = Color32::from_rgb(91, 156, 255);
 pub const MUTED: Color32 = Color32::from_rgb(140, 148, 163);
 
+/// Placeholder shown for RF readings while the amplifier is not in TX mode.
+pub const DASH: &str = "--";
+
+/// Text for a held RF meter: the dash when not in TX mode; an empty string ("keep showing the
+/// last number") while in TX with no RF at the moment (e.g. a pause between SSB syllables);
+/// otherwise the live reading.
+pub fn rf_text(tx: bool, carrier: bool, live: String) -> String {
+    if !tx {
+        DASH.to_string()
+    } else if !carrier {
+        String::new()
+    } else {
+        live
+    }
+}
+
+/// Like [`rf_text`] for a plain readout (no meter): remembers the last number itself.
+pub fn held_rf(ui: &egui::Ui, key: &str, tx: bool, carrier: bool, live: String) -> String {
+    let id = ui.scope_id().with(("rf_hold", key));
+    let shown = if !tx {
+        DASH.to_string()
+    } else if carrier {
+        live
+    } else {
+        ui.ctx().data(|d| d.get_temp::<String>(id)).unwrap_or_else(|| DASH.to_string())
+    };
+    ui.ctx().data_mut(|d| d.insert_temp(id, shown.clone()));
+    shown
+}
+
 /// Colour zones for a meter: below `warn` is green, below `crit` amber, else red.
 #[derive(Clone, Copy)]
 pub struct Zones {
@@ -72,15 +102,19 @@ impl Meter<'_> {
             }
         };
         ui.ctx().data_mut(|d| d.insert_temp(id, f));
-        // Power meters (readouts in W): the number only updates when a reading rises above the
-        // decaying bar, or when the reading returns to zero, so it holds the last high value
-        // while the bar falls.
-        let text = if self.text.ends_with(" W") {
+        // RF meters (power readouts in W, and SWR): the number follows the reading when it rises
+        // or the bar has settled, but holds the last value while the bar is still falling, and
+        // keeps it when the text is empty (TX mode with no RF right now). The dash always wins.
+        let sticky = self.text.is_empty() || self.text == DASH || self.text.ends_with(" W") || self.label.eq_ignore_ascii_case("SWR");
+        let text = if sticky {
             let tid = id.with("text");
             let held = ui.ctx().data(|d| d.get_temp::<String>(tid));
-            let t = match held {
-                Some(h) if target <= shown && self.value > self.min => h,
-                _ => self.text.clone(),
+            let t = if self.text.is_empty() {
+                held.unwrap_or_else(|| DASH.to_string())
+            } else if self.text == DASH || f <= target {
+                self.text.clone()
+            } else {
+                held.unwrap_or_else(|| self.text.clone())
             };
             ui.ctx().data_mut(|d| d.insert_temp(tid, t.clone()));
             t

@@ -613,18 +613,20 @@ impl App {
         };
         let (fwd_max, fwd_red) = model.forward_meter_w();
         let (refl_max, refl_red) = model.reflected_meter_w();
+        let tx = t.mode == AmpMode::OperateTx;
+        let carrier = t.forward_w > 0.0 || t.reflected_w > 0.0 || t.input_w > 0.0;
         let pk_on = self.cfg.peak_hold;
         let h = move |secs: f32| pk_on.then(|| std::time::Duration::from_secs_f32(secs));
         widgets::card(ui, "RF power", |ui| {
             ui.horizontal(|ui| {
-                widgets::readout(ui, "FORWARD", &format!("{:.0} W", t.forward_w), ui.visuals().strong_text_color());
+                widgets::readout(ui, "FORWARD", &widgets::held_rf(ui, "fwd", tx, carrier, format!("{:.0} W", t.forward_w)), ui.visuals().strong_text_color());
                 ui.add_space(18.0);
-                widgets::readout(ui, "REFLECTED", &format!("{:.0} W", t.reflected_w), if t.reflected_w > 20.0 { AMBER } else { ui.visuals().strong_text_color() });
+                widgets::readout(ui, "REFLECTED", &widgets::held_rf(ui, "refl", tx, carrier, format!("{:.0} W", t.reflected_w)), if t.reflected_w > 20.0 { AMBER } else { ui.visuals().strong_text_color() });
                 ui.add_space(18.0);
-                let swr_col = if t.swr >= 3.0 { RED } else if t.swr >= self.cfg.swr_alert { AMBER } else { GREEN };
-                widgets::readout(ui, "SWR", &format!("{:.2}", t.swr.max(1.0)), swr_col);
+                let swr_col = if !tx { ui.visuals().strong_text_color() } else if t.swr >= 3.0 { RED } else if t.swr >= self.cfg.swr_alert { AMBER } else { GREEN };
+                widgets::readout(ui, "SWR", &widgets::held_rf(ui, "swr", tx, carrier, format!("{:.2}", t.swr.max(1.0))), swr_col);
                 ui.add_space(18.0);
-                widgets::readout(ui, "DRIVE", &format!("{:.1} W", t.input_w), ui.visuals().strong_text_color());
+                widgets::readout(ui, "DRIVE", &widgets::held_rf(ui, "drive", tx, carrier, format!("{:.1} W", t.input_w)), ui.visuals().strong_text_color());
             });
             ui.add_space(6.0);
             Meter {
@@ -632,7 +634,7 @@ impl App {
                 value: t.forward_w,
                 min: 0.0,
                 max: fwd_max,
-                text: format!("{:.0} W", t.forward_w),
+                text: widgets::rf_text(tx, carrier, format!("{:.0} W", t.forward_w)),
                 zones: Zones::green_red(fwd_red),
                 peak: h(2.5),
                 height: 40.0,
@@ -643,7 +645,7 @@ impl App {
                 value: t.reflected_w,
                 min: 0.0,
                 max: refl_max,
-                text: format!("{:.0} W", t.reflected_w),
+                text: widgets::rf_text(tx, carrier, format!("{:.0} W", t.reflected_w)),
                 zones: Zones::green_red(refl_red),
                 peak: h(2.5),
                 height: 40.0,
@@ -654,7 +656,7 @@ impl App {
                 value: t.swr.max(1.0),
                 min: 1.0,
                 max: 4.0,
-                text: format!("{:.2}", t.swr.max(1.0)),
+                text: widgets::rf_text(tx, carrier, format!("{:.2}", t.swr.max(1.0))),
                 zones: Zones { warn: self.cfg.swr_alert, crit: 3.0 },
                 peak: h(2.5),
                 height: 40.0,
@@ -665,7 +667,7 @@ impl App {
                 value: t.input_w,
                 min: 0.0,
                 max: 100.0,
-                text: format!("{:.1} W", t.input_w),
+                text: widgets::rf_text(tx, carrier, format!("{:.1} W", t.input_w)),
                 zones: Zones { warn: 70.0, crit: 90.0 },
                 peak: h(2.5),
                 height: 40.0,
@@ -1036,6 +1038,8 @@ impl App {
         let pk_on = self.cfg.peak_hold;
         let h = move |secs: f32| pk_on.then(|| std::time::Duration::from_secs_f32(secs));
         let temp_c = t.temp1_c();
+        let tx = t.mode == AmpMode::OperateTx;
+        let carrier = t.forward_w > 0.0 || t.reflected_w > 0.0 || t.input_w > 0.0;
         ui.spacing_mut().item_spacing = egui::vec2(6.0, 3.0);
 
         let kinds = self.cfg.compact_graph_slots;
@@ -1044,15 +1048,15 @@ impl App {
         let mut open_menu = None;
         let mut slot_meter = |ui: &mut egui::Ui, slot: usize| {
             let m = match kinds[slot] {
-                CompactGraph::Forward => Meter { label: "FORWARD POWER", value: t.forward_w, min: 0.0, max: fwd_max, text: format!("{:.0} W", t.forward_w),
+                CompactGraph::Forward => Meter { label: "FORWARD POWER", value: t.forward_w, min: 0.0, max: fwd_max, text: widgets::rf_text(tx, carrier, format!("{:.0} W", t.forward_w)),
                     zones: Zones::green_red(fwd_red), peak: h(2.5), height: 34.0 },
-                CompactGraph::Reflected => Meter { label: "REFLECTED POWER", value: t.reflected_w, min: 0.0, max: refl_max, text: format!("{:.0} W", t.reflected_w),
+                CompactGraph::Reflected => Meter { label: "REFLECTED POWER", value: t.reflected_w, min: 0.0, max: refl_max, text: widgets::rf_text(tx, carrier, format!("{:.0} W", t.reflected_w)),
                     zones: Zones::green_red(refl_red), peak: h(2.5), height: 34.0 },
-                CompactGraph::Swr => Meter { label: "SWR", value: t.swr.max(1.0), min: 1.0, max: 4.0, text: format!("{:.2}", t.swr.max(1.0)),
+                CompactGraph::Swr => Meter { label: "SWR", value: t.swr.max(1.0), min: 1.0, max: 4.0, text: widgets::rf_text(tx, carrier, format!("{:.2}", t.swr.max(1.0))),
                     zones: Zones { warn: swr_alert, crit: 3.0 }, peak: h(2.5), height: 34.0 },
                 CompactGraph::Temp => Meter { label: "PA TEMPERATURE", value: temp_c, min: 0.0, max: 100.0, text: temp_txt.clone(),
                     zones: Zones::green_red(76.0), peak: h(60.0), height: 34.0 },
-                CompactGraph::Drive => Meter { label: "DRIVE POWER", value: t.input_w, min: 0.0, max: 100.0, text: format!("{:.1} W", t.input_w),
+                CompactGraph::Drive => Meter { label: "DRIVE POWER", value: t.input_w, min: 0.0, max: 100.0, text: widgets::rf_text(tx, carrier, format!("{:.1} W", t.input_w)),
                     zones: Zones { warn: 70.0, crit: 90.0 }, peak: h(2.5), height: 34.0 },
                 CompactGraph::DrainCurrent => Meter { label: "PA DRAIN CURRENT", value: t.id1_a, min: 0.0, max: 60.0, text: format!("{:.1} A", t.id1_a),
                     zones: Zones { warn: 45.0, crit: 55.0 }, peak: h(2.5), height: 34.0 },
