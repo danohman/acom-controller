@@ -135,6 +135,7 @@ impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         crate::update::cleanup_old();
         let cfg = Config::load();
+        crate::theme::install_fonts(&cc.egui_ctx);
         crate::theme::apply(&cc.egui_ctx, cfg.dark_mode, cfg.ui_scale);
         let mut app = Self {
             cfg,
@@ -630,7 +631,7 @@ impl App {
             });
             ui.add_space(6.0);
             Meter {
-                label: "Forward power",
+                label: "FORWARD POWER",
                 value: t.forward_w,
                 min: 0.0,
                 max: fwd_max,
@@ -641,7 +642,7 @@ impl App {
             }
             .show(ui);
             Meter {
-                label: "Reflected power",
+                label: "REFLECTED POWER",
                 value: t.reflected_w,
                 min: 0.0,
                 max: refl_max,
@@ -663,7 +664,7 @@ impl App {
             }
             .show(ui);
             Meter {
-                label: "Drive power",
+                label: "DRIVE POWER",
                 value: t.input_w,
                 min: 0.0,
                 max: 100.0,
@@ -678,7 +679,7 @@ impl App {
         widgets::card(ui, "Power amplifier", |ui| {
             let temp = t.temp1_c();
             Meter {
-                label: "PA temperature",
+                label: "PA TEMPERATURE",
                 value: temp,
                 min: 0.0,
                 max: 100.0,
@@ -689,7 +690,7 @@ impl App {
             }
             .show(ui);
             Meter {
-                label: "PA drain current",
+                label: "PA DRAIN CURRENT",
                 value: t.id1_a,
                 min: 0.0,
                 max: 60.0,
@@ -700,7 +701,7 @@ impl App {
             }
             .show(ui);
             Meter {
-                label: "PA voltage (HV)",
+                label: "PA VOLTAGE (HV)",
                 value: t.hv1_v,
                 min: 0.0,
                 max: 60.0,
